@@ -4106,6 +4106,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   model: event.model,
                   inputTokens: event.inputTokens,
                   outputTokens: event.outputTokens,
+                  cacheReadTokens: event.cacheReadTokens,
+                  cacheWriteTokens: event.cacheWriteTokens,
                 },
               });
             } else if (event.type === "done") {
