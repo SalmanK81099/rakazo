@@ -1,6 +1,7 @@
 import { t } from "@lingui/core/macro";
 import type { ThreadSnapshot } from "@rakazo/contracts";
 import {
+  callClientNonce,
   isFarewell,
   isSecretAskBlock,
   narrateTool,
@@ -35,6 +36,8 @@ const RUN_ACTIVE = ["running", "queued", "leased"];
 const FAREWELL_TIMEOUT = 20_000;
 
 let state: CallState | null = null;
+/** Shared by every message this call sends, so the thread can group one call's exchange. */
+let callId = "";
 let transcribe = false;
 let thread: ThreadSnapshot | null = null;
 let feed: AbortController | null = null;
@@ -78,6 +81,7 @@ export function startCall(call: {
   transcribe: boolean;
 }): void {
   endCall();
+  callId = randomId();
   transcribe = call.transcribe;
   state = {
     botId: call.botId,
@@ -233,7 +237,7 @@ async function handleTranscript(text: string) {
     } else if (runActive(thread)) {
       await rpc.threads.followUp({ botId, text });
     } else {
-      await rpc.threads.send({ botId, clientNonce: clientNonce(), text });
+      await rpc.threads.send({ botId, clientNonce: callClientNonce(callId), text });
     }
     if (state?.botId !== botId) return;
     commit(await rpc.threads.get({ botId }, { signal: callFeed?.signal }));
@@ -338,9 +342,9 @@ function errorText(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
-function clientNonce(): string {
+function randomId(): string {
   const webCrypto = globalThis.crypto;
   return typeof webCrypto?.randomUUID === "function"
     ? webCrypto.randomUUID()
-    : `call-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }

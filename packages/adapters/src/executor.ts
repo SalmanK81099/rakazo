@@ -54,6 +54,7 @@ import {
   formatSkillsCatalogInstruction,
   humanizeToolName,
   inferAttachmentMimeType,
+  isCallClientNonce,
   isMessagingChannelRun,
   isOneShotRoutineCrons,
   isTerminal,
@@ -344,6 +345,9 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "list_secrets",
   "cloud_agent_status",
 ]);
+/** Added to the turn prompt when the user spoke this message on a live voice call. */
+export const VOICE_CALL_INSTRUCTION =
+  "You are on a live voice call. Reply in one to three short spoken sentences. No markdown, lists, links, or option cards; do not use ask_user unless you truly cannot proceed.";
 const MAX_MODEL_FILE_BYTES = 250_000;
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
@@ -3637,11 +3641,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
         const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
+        // Calls carry no schema flag: the sending client encodes them in the clientNonce.
+        const voiceCall =
+          (run.trigger === "user" || run.trigger === "follow_up") && run.sourceMessageId
+            ? isCallClientNonce(
+                (
+                  await deps.prisma.message.findUnique({
+                    where: { id: run.sourceMessageId },
+                    select: { clientNonce: true },
+                  })
+                )?.clientNonce,
+              )
+            : false;
         const prompt = [
           replyContext,
           basePrompt,
           takeoverResume?.promptNote,
           approvalContinuation,
+          voiceCall ? VOICE_CALL_INSTRUCTION : undefined,
           // Per-turn, not in the system prompt: the timestamp changes every call and would break the cacheable prefix.
           formatCurrentTimeInstruction(),
         ]

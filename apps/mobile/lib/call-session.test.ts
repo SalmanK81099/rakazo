@@ -1,3 +1,4 @@
+import { callIdFromClientNonce } from "@rakazo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CallClip, CallDeps } from "./call-session";
 import { endCall, getSnapshot, startCall, subscribe, toggleMute } from "./call-session";
@@ -28,7 +29,7 @@ function fakes() {
   const recordings: Array<Deferred<CallClip | null>> = [];
   const signals: AbortSignal[] = [];
   const speeches: Array<Deferred<void>> = [];
-  const send = vi.fn(async () => undefined);
+  const send = vi.fn(async (_botId: string, _text: string, _clientNonce: string) => undefined);
   const unwatch = vi.fn();
   let reply: (messageId: string, text: string) => void = () => undefined;
   const deps: CallDeps = {
@@ -79,8 +80,29 @@ describe("mobile call session", () => {
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
     fake.say("how is the deploy going");
     await flush();
-    expect(fake.send).toHaveBeenCalledWith("bot-1", "how is the deploy going");
+    expect(fake.send).toHaveBeenCalledWith(
+      "bot-1",
+      "how is the deploy going",
+      expect.stringMatching(/^call:/),
+    );
     expect(getSnapshot()).toMatchObject({ phase: "thinking", heard: "how is the deploy going" });
+  });
+
+  it("tags every message in one call with the same call id", async () => {
+    const fake = fakes();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    fake.say("how is the deploy going");
+    await flush();
+    fake.replyWith("message-1", "It is green.");
+    fake.speeches[0]?.resolve();
+    await flush();
+    fake.say("and the tests");
+    await flush();
+
+    const nonces = fake.send.mock.calls.map((call) => call[2]);
+    expect(nonces).toHaveLength(2);
+    expect(callIdFromClientNonce(nonces[0])).toBe(callIdFromClientNonce(nonces[1]));
+    expect(nonces[0]).not.toBe(nonces[1]);
   });
 
   it("speaks a reply, then listens again", async () => {
@@ -115,7 +137,11 @@ describe("mobile call session", () => {
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
     fake.say("that's all, bye");
     await flush();
-    expect(fake.send).toHaveBeenCalledWith("bot-1", "that's all, bye");
+    expect(fake.send).toHaveBeenCalledWith(
+      "bot-1",
+      "that's all, bye",
+      expect.stringMatching(/^call:/),
+    );
     fake.replyWith("message-1", "Talk soon.");
     expect(getSnapshot()?.phase).toBe("speaking");
     fake.speeches[0]?.resolve();

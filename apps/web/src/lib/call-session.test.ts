@@ -1,5 +1,5 @@
 import type { ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
-import { runThreadSubscription } from "@rakazo/core";
+import { callIdFromClientNonce, runThreadSubscription } from "@rakazo/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { endCall, getSnapshot, startCall, toggleMute } from "./call-session";
 import { dictation } from "./dictation.js";
@@ -83,6 +83,18 @@ describe("call session", () => {
       phase: "thinking",
       exchanges: [{ role: "user", text: "book the flight" }],
     });
+  });
+
+  it("tags every message in one call with the same call id", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await heard("book the flight");
+    await heard("window seat please");
+
+    const nonces = send.mock.calls.map((call) => String(call[0]?.clientNonce));
+    expect(nonces).toHaveLength(2);
+    expect(nonces[0]?.startsWith("call:")).toBe(true);
+    expect(callIdFromClientNonce(nonces[0])).toBe(callIdFromClientNonce(nonces[1]));
+    expect(nonces[0]).not.toBe(nonces[1]);
   });
 
   it("speaks a reply from the call's own feed, then listens again", async () => {

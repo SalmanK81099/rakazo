@@ -1,4 +1,4 @@
-import { ACTIVE_RUN_STATUSES, abortableDelay, isFarewell } from "@rakazo/core";
+import { ACTIVE_RUN_STATUSES, abortableDelay, callClientNonce, isFarewell } from "@rakazo/core";
 import type { AudioRecorder } from "expo-audio";
 import { File } from "expo-file-system";
 import { useSyncExternalStore } from "react";
@@ -35,7 +35,7 @@ export type CallClip = { base64: string; mimeType: string };
 export type CallDeps = {
   record: (signal: AbortSignal) => Promise<CallClip | null>;
   transcribe: (clip: CallClip, signal: AbortSignal) => Promise<string>;
-  send: (botId: string, text: string) => Promise<void>;
+  send: (botId: string, text: string, clientNonce: string) => Promise<void>;
   speak: (botId: string, text: string) => Promise<void>;
   watch: (botId: string, onReply: (messageId: string, text: string) => void) => () => void;
 };
@@ -53,6 +53,8 @@ const METER_POLL_MS = 200;
 const MAX_CLIP_MS = 30_000;
 
 let state: CallState | null = null;
+/** Shared by every message this call sends, so the thread can group one call's exchange. */
+let callId = "";
 let deps: CallDeps = productionDeps();
 let turn: AbortController | null = null;
 let unwatch: (() => void) | null = null;
@@ -93,6 +95,7 @@ export function startCall(
 ): void {
   endCall();
   deps = { ...productionDeps(), ...overrides };
+  callId = randomId();
   state = {
     botId: call.botId,
     botName: call.botName,
@@ -173,7 +176,7 @@ async function listen(): Promise<void> {
       hangUpAfterReply = true;
       hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT_MS);
     }
-    await deps.send(botId, text);
+    await deps.send(botId, text, callClientNonce(callId));
   } catch (error) {
     if (!mine()) return;
     failures += 1;
@@ -285,8 +288,8 @@ async function transcribeClip(clip: CallClip, signal: AbortSignal): Promise<stri
   return body.text ?? "";
 }
 
-async function sendHeard(botId: string, text: string): Promise<void> {
-  await rpc("threads/send", { botId, clientNonce: clientNonce(), text });
+async function sendHeard(botId: string, text: string, clientNonce: string): Promise<void> {
+  await rpc("threads/send", { botId, clientNonce, text });
 }
 
 async function speakReply(botId: string, text: string): Promise<void> {
@@ -337,8 +340,8 @@ function lastBotMessage(snapshot: MobileSnapshot | null): MobileMessage | undefi
   return undefined;
 }
 
-function clientNonce(): string {
+function randomId(): string {
   const webCrypto = globalThis.crypto;
   if (webCrypto && typeof webCrypto.randomUUID === "function") return webCrypto.randomUUID();
-  return `call-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
