@@ -7,6 +7,7 @@
 export const CALL_CLIENT_NONCE_PREFIX = "call:";
 
 export function callClientNonce(callId: string): string {
+  if (callId.includes(":")) throw new Error(`callId must not contain ":": ${callId}`);
   const unique =
     globalThis.crypto?.randomUUID?.() ??
     `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -18,6 +19,8 @@ export function isCallClientNonce(clientNonce: string | null | undefined): boole
 }
 
 export function callIdFromClientNonce(clientNonce: string | null | undefined): string | undefined {
-  if (!isCallClientNonce(clientNonce)) return undefined;
-  return clientNonce?.slice(CALL_CLIENT_NONCE_PREFIX.length).split(":")[0] || undefined;
+  if (!clientNonce || !isCallClientNonce(clientNonce)) return undefined;
+  const rest = clientNonce.slice(CALL_CLIENT_NONCE_PREFIX.length);
+  const suffixAt = rest.lastIndexOf(":");
+  return suffixAt === -1 ? undefined : rest.slice(0, suffixAt) || undefined;
 }

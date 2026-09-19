@@ -9,7 +9,8 @@ const SUMMARY_MAX = 120;
 /**
  * Collapses each run of consecutive call messages into one group: a user
  * message carrying the call's `callId`, or a bot reply to a run already in the
- * group. Anything else ends the run.
+ * group. Anything else ends the run — a typed user message breaks the group
+ * even when it reuses the run of a call turn.
  */
 export function groupVoiceChats(messages: ThreadMessage[]): ThreadItem[] {
   const items: ThreadItem[] = [];
@@ -17,7 +18,10 @@ export function groupVoiceChats(messages: ThreadMessage[]): ThreadItem[] {
   let openRunIds = new Set<string>();
   for (const message of messages) {
     if (open) {
-      if (message.callId === open.callId || (message.runId && openRunIds.has(message.runId))) {
+      const joinsByRun = Boolean(
+        message.role === "bot" && message.runId && openRunIds.has(message.runId),
+      );
+      if (message.callId === open.callId || joinsByRun) {
         open.messages.push(message);
         if (message.callId === open.callId && message.runId) openRunIds.add(message.runId);
         continue;

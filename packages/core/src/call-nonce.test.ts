@@ -12,6 +12,15 @@ describe("call client nonce", () => {
     expect(callClientNonce("call-1")).not.toBe(callClientNonce("call-1"));
   });
 
+  it("rejects a call id that would blur the nonce format", () => {
+    expect(() => callClientNonce("call:1")).toThrow();
+  });
+
+  it("reads the id up to the unique suffix, not the first colon", () => {
+    expect(callIdFromClientNonce("call:call:1:abc")).toBe("call:1");
+    expect(callIdFromClientNonce("call:call-1")).toBeUndefined();
+  });
+
   it("rejects plain nonces and other prefixed nonces", () => {
     for (const nonce of [null, undefined, "", "abc-123", "user-progress:run-1:0:x:y"]) {
       expect(isCallClientNonce(nonce)).toBe(false);

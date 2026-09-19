@@ -50,6 +50,18 @@ describe("groupVoiceChats", () => {
     expect(items[0]?.kind === "voiceChat" && items[0].messages).toHaveLength(2);
     expect(items[1]?.kind).toBe("message");
   });
+
+  it("leaves a typed message and its reply out of the card even on the call's run", () => {
+    const items = groupVoiceChats([
+      message({ role: "user", callId: "call-1", runId: "run-1" }),
+      message({ role: "bot", runId: "run-1" }),
+      message({ role: "user", runId: "run-1" }),
+      message({ role: "bot", runId: "run-1" }),
+    ]);
+
+    expect(items.map((item) => item.kind)).toEqual(["voiceChat", "message", "message"]);
+    expect(items[0]?.kind === "voiceChat" && items[0].messages).toHaveLength(2);
+  });
 });
 
 describe("voiceChatSummary", () => {
