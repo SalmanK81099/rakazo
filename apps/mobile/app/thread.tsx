@@ -100,6 +100,7 @@ import { mobileTokens } from "../lib/appearance";
 import { type MobileArtifactTarget, openMobileArtifact } from "../lib/artifact-open";
 import { nextAutoSpeakAction } from "../lib/auto-speak";
 import { confirmDeleteBot } from "../lib/bot-lifecycle";
+import { startCall, useCallSession } from "../lib/call-session";
 import { cancelFocusPrompt, focusPromptThreadActive } from "../lib/focus-prompt";
 import { dateLocaleForUi, t, useI18n } from "../lib/i18n";
 import { saveLastBotId } from "../lib/last-bot";
@@ -259,6 +260,8 @@ function Thread() {
     messageId?: string;
   }>();
   const inGroup = Boolean(groupId);
+  const call = useCallSession();
+  const onCall = Boolean(botId) && call?.botId === botId;
   const scroll = useRef<FlatList<MobileMessage>>(null);
   const pinnedScroll = useRef<ScrollView>(null);
   const scrollBehavior = useRef(new ThreadScrollBehavior());
@@ -1298,6 +1301,24 @@ function Thread() {
     [botId, snap?.members],
   );
 
+  async function startVoiceCall() {
+    if (!botId) return;
+    try {
+      const status = await rpc<{ ready: boolean }>("voice/status");
+      if (!status.ready) {
+        router.push("/voice");
+        return;
+      }
+      startCall({
+        botId,
+        botName: name ?? t("Bot"),
+        botColor: mentionBots.find((bot) => bot.id === botId)?.color,
+      });
+    } catch {
+      router.push("/voice");
+    }
+  }
+
   function showAttachMenu() {
     Alert.alert(t("Attach"), undefined, [
       {
@@ -1407,7 +1428,8 @@ function Thread() {
             },
           ]
         : []),
-      ...(message.role === "bot" && blockText(message)
+      // The call already reads replies aloud; a second voice would talk over it.
+      ...(message.role === "bot" && !onCall && blockText(message)
         ? [{ name: "speak", text: t("Speak message"), onPress: () => void speak(message) }]
         : []),
       {
@@ -2091,6 +2113,28 @@ function Thread() {
               }}
             />
           </View>
+          {botId && !onCall ? (
+            <Pressable
+              accessibilityLabel={t("Call")}
+              onPress={() => void startVoiceCall()}
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: 22,
+                borderWidth: 1,
+                borderColor: tokens.border,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <NativeSymbol
+                ios="waveform"
+                android="pulse-outline"
+                size={18}
+                color={tokens.mutedForeground}
+              />
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityLabel={t("Send")}
             disabled={sending || !canSend}

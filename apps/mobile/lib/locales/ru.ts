@@ -599,11 +599,21 @@ export const RU_MESSAGES: Record<string, string> = {
   "{name} (permission denied)": "{name} (в разрешении отказано)",
   "{name} (unsupported type)": "{name} (неподдерживаемый тип)",
   "Saved {name} locally": "{name} сохранен локально.",
-
   "This device": "Это устройство",
   "On · Free, works offline": "Включено · Бесплатно, работает офлайн",
   "Your phone's built-in voice. Free, no account needed":
     "Встроенный голос телефона. Бесплатно, без аккаунта",
   "Could not save that preference": "Не удалось сохранить эту настройку",
   Username: "Имя пользователя",
+  "On a call with {name}": "Звонок с {name}",
+  Call: "Позвонить",
+  Settings: "Настройки",
+  Transcript: "Расшифровка",
+  Mute: "Выключить микрофон",
+  Unmute: "Включить микрофон",
+  "Hang up": "Завершить",
+  "Allow microphone access to call a bot.": "Разрешите доступ к микрофону, чтобы звонить боту.",
+  "Could not hear that.": "Не удалось расслышать.",
+  "Could not transcribe that.": "Не удалось распознать речь.",
+  "Could not speak that.": "Не удалось озвучить.",
 };
