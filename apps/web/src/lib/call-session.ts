@@ -1,5 +1,5 @@
 import { t } from "@lingui/core/macro";
-import type { ThreadSnapshot } from "@rakazo/contracts";
+import type { ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
 import {
   callClientNonce,
   isFarewell,
@@ -12,7 +12,7 @@ import {
 import { useSyncExternalStore } from "react";
 import { dictation } from "./dictation.js";
 import { rpc } from "./rpc.js";
-import { isThreadSnapshotEvent, reduceThreadSnapshot } from "./thread-events.js";
+import { isThreadSnapshotEvent, reduceThreadSnapshot, rememberCallRun } from "./thread-events.js";
 import { speaker } from "./tts.js";
 
 export type CallPhase = "listening" | "thinking" | "speaking";
@@ -41,7 +41,8 @@ let callId = "";
 let transcribe = false;
 let thread: ThreadSnapshot | null = null;
 let feed: AbortController | null = null;
-let spokenMessageId: string | null = null;
+/** Every bot message already spoken this call: a streaming message updates many times. */
+const spokenMessageIds = new Set<string>();
 let unsubSpeech: (() => void) | null = null;
 let unsubDictation: (() => void) | null = null;
 let hangUpAfterReply = false;
@@ -130,7 +131,7 @@ export function endCall(): void {
   dictation.stop("cancel");
   speaker.stop();
   thread = null;
-  spokenMessageId = null;
+  spokenMessageIds.clear();
   narrated.clear();
   if (!state) return;
   state = null;
@@ -187,6 +188,8 @@ async function listen() {
     endCall();
     return;
   }
+  // A reply still playing owns the audio session; its idle event calls back here.
+  if (speaker.isSpeaking()) return;
   set({ phase: "listening", heard: "" });
   speaker.stop();
   if (state.muted || pendingSecretAsk(thread)) {
@@ -237,7 +240,9 @@ async function handleTranscript(text: string) {
     } else if (runActive(thread)) {
       await rpc.threads.followUp({ botId, text });
     } else {
-      await rpc.threads.send({ botId, clientNonce: callClientNonce(callId), text });
+      const sent = await rpc.threads.send({ botId, clientNonce: callClientNonce(callId), text });
+      // Live events omit the nonce, so tell the reducer which run carries this call.
+      rememberCallRun(sent.runId, callId);
     }
     if (state?.botId !== botId) return;
     commit(await rpc.threads.get({ botId }, { signal: callFeed?.signal }));
@@ -259,12 +264,12 @@ function reactToThread() {
   const { botId } = state;
   const messages = thread?.messages ?? [];
   const lastBot = [...messages].reverse().find((message) => message.role === "bot");
-  if (lastBot && lastBot.id !== spokenMessageId) {
+  if (lastBot && !spokenMessageIds.has(lastBot.id) && replyFinished(lastBot)) {
     const text = speechFromBlocks(lastBot.blocks);
     const ask = lastBot.blocks.find((block) => block.kind === "ask" && block.status !== "answered");
     const secretAsk = ask && isSecretAskBlock(ask);
     if (text) {
-      spokenMessageId = lastBot.id;
+      spokenMessageIds.add(lastBot.id);
       dictation.stop("cancel");
       set({ exchanges: [...state.exchanges, { role: "bot", text }] });
       void speaker.speak(
@@ -278,12 +283,14 @@ function reactToThread() {
       return;
     }
     if (!runActive(thread)) {
-      spokenMessageId = lastBot.id;
+      spokenMessageIds.add(lastBot.id);
       void listen();
       return;
     }
   }
   if (!runActive(thread)) return;
+  // Narration must not cut into a reply already playing; its keys stay unconsumed for later.
+  if (speaker.isSpeaking()) return;
   const phrases: string[] = [];
   let lastKey = "";
   for (const message of messages) {
@@ -304,6 +311,17 @@ function reactToThread() {
   if (phrases.length) {
     void speaker.speak(phrases.join(". "), { botId, messageId: `narrate:${lastKey}` });
   }
+}
+
+/**
+ * A reply is only whole once its own run stopped. Speaking a message the run is
+ * still streaming clips it, and later updates of the same id never get a turn.
+ */
+function replyFinished(message: ThreadMessage) {
+  const run = thread?.run;
+  if (!run) return true;
+  if (message.runId && message.runId !== run.id) return true;
+  return !RUN_ACTIVE.includes(run.status);
 }
 
 function runActive(snapshot: ThreadSnapshot | null) {

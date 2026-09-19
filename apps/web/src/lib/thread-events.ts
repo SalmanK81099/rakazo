@@ -241,6 +241,19 @@ export function prependThreadMessagePage(
   return prependThreadHistoryPage(prev, page);
 }
 
+/**
+ * A call message carries its call id only in the clientNonce, which the server
+ * reads but live events never repeat. The call store registers the run it just
+ * sent so the live user bubble groups into the call card straight away, instead
+ * of showing loose under it until a refresh brings the server's copy.
+ */
+// ponytail: unbounded map; trim if one page session ever holds thousands of call turns.
+const callIdByRunId = new Map<string, string>();
+
+export function rememberCallRun(runId: string, callId: string): void {
+  callIdByRunId.set(runId, callId);
+}
+
 export function isThreadSnapshotEvent(event: ProductEvent): boolean {
   return (
     event.type === "thread.cleared" ||
@@ -477,14 +490,19 @@ export function reduceThreadSnapshot(
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
     const role = (event.payload.role as ThreadMessage["role"]) ?? "bot";
     const blocks = (event.payload.blocks as ThreadMessage["blocks"]) ?? [];
+    const id = String(event.payload.messageId ?? event.id);
+    const known = prev.messages.find((message) => message.id === id);
     const next: ThreadMessage = {
-      id: String(event.payload.messageId ?? event.id),
+      id,
       threadId: event.threadId,
       seq: event.seq,
       role,
       blocks,
       botId: event.botId,
       runId: event.runId,
+      callId:
+        known?.callId ??
+        (role === "user" && event.runId ? callIdByRunId.get(event.runId) : undefined),
       replyToMessageId:
         typeof event.payload.replyToMessageId === "string"
           ? event.payload.replyToMessageId

@@ -1,10 +1,12 @@
-import type { ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
+import type { ProductEvent, ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
 import { callIdFromClientNonce, runThreadSubscription } from "@rakazo/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { endCall, getSnapshot, startCall, toggleMute } from "./call-session";
 import { dictation } from "./dictation.js";
 import { rpc } from "./rpc.js";
+import { reduceThreadSnapshot } from "./thread-events.js";
 import { speaker } from "./tts.js";
+import { groupVoiceChats } from "./voice-chat-groups.js";
 
 // The macro compiles away in the app build; tests run the source, so tag the template as-is.
 vi.mock("@lingui/core/macro", () => ({
@@ -28,6 +30,7 @@ vi.mock("./tts.js", () => ({
   speaker: {
     speak: vi.fn(async () => undefined),
     stop: vi.fn(),
+    isSpeaking: vi.fn(() => false),
     subscribe: vi.fn(() => () => undefined),
   },
 }));
@@ -47,6 +50,7 @@ vi.mock("./rpc.js", () => ({
 
 const listen = vi.mocked(dictation.listen);
 const speak = vi.mocked(speaker.speak);
+const isSpeaking = vi.mocked(speaker.isSpeaking);
 const send = vi.mocked(rpc.threads.send);
 const getThread = vi.mocked(rpc.threads.get);
 
@@ -54,6 +58,7 @@ describe("call session", () => {
   beforeEach(() => {
     endCall();
     vi.clearAllMocks();
+    isSpeaking.mockReturnValue(false);
     listen.mockResolvedValue(undefined);
     getThread.mockResolvedValue(snapshot([]) as never);
     send.mockResolvedValue({ runId: "run-1", taskId: "task-1" } as never);
@@ -188,6 +193,72 @@ describe("call session", () => {
 
     expect(getSnapshot()).toBeNull();
   });
+
+  it("speaks a streaming reply once, with the text its run finished on", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Booked")], runningRun) as never);
+    await heard("book the flight");
+    expect(speak).not.toHaveBeenCalled();
+
+    getThread.mockResolvedValue(
+      snapshot([botMessage("message-1", "Booked for Friday")], runningRun) as never,
+    );
+    await feed?.refresh();
+    expect(speak).not.toHaveBeenCalled();
+
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Booked for Friday")]) as never);
+    await feed?.refresh();
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak).toHaveBeenCalledWith(
+      "Booked for Friday",
+      expect.objectContaining({ messageId: "message-1" }),
+    );
+  });
+
+  it("does not speak a message a refresh re-delivers", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Booked for Friday")]) as never);
+    await heard("book the flight");
+    expect(speak).toHaveBeenCalledTimes(1);
+
+    await feed?.refresh();
+    await feed?.refresh();
+    expect(speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start dictation while the speaker is still speaking", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Booked for Friday")]) as never);
+    await heard("book the flight");
+    listen.mockClear();
+
+    // The previous utterance reports idle after the next one already started playing.
+    isSpeaking.mockReturnValue(true);
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "idle" });
+    await Promise.resolve();
+    expect(listen).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).not.toBe("listening");
+
+    isSpeaking.mockReturnValue(false);
+    speech?.({ status: "idle" });
+    await Promise.resolve();
+    expect(listen).toHaveBeenCalledTimes(1);
+  });
+
+  it("tags the call's user message for the thread card before the server copy lands", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await heard("book the flight");
+
+    const callId = callIdFromClientNonce(String(send.mock.calls[0]?.[0]?.clientNonce));
+    const live = reduceThreadSnapshot(snapshot([]), userMessageEvent("run-1"));
+    expect(live?.messages[0]?.callId).toBe(callId);
+    expect(groupVoiceChats(live?.messages ?? [])).toEqual([
+      { kind: "voiceChat", callId, messages: live?.messages },
+    ]);
+  });
 });
 
 async function heard(text: string) {
@@ -202,18 +273,49 @@ function botMessage(id: string, text: string): ThreadMessage {
     threadId: "thread-1",
     seq: 4,
     role: "bot",
+    runId: "run-1",
     blocks: [{ kind: "text", text }],
     createdAt: "2026-09-20T00:00:00.000Z",
   };
 }
 
-function snapshot(messages: ThreadMessage[]): ThreadSnapshot {
+const runningRun = {
+  id: "run-1",
+  botId: "call-bot",
+  threadId: "thread-1",
+  taskId: "task-1",
+  status: "running",
+  trigger: "user",
+  routineId: null,
+  modelProvider: null,
+  modelId: null,
+  error: null,
+  startedAt: "2026-09-20T00:00:00.000Z",
+  completedAt: null,
+  createdAt: "2026-09-20T00:00:00.000Z",
+} as ThreadSnapshot["run"];
+
+function userMessageEvent(runId: string): ProductEvent {
+  return {
+    id: "event-1",
+    seq: 5,
+    spaceId: "space-1",
+    threadId: "thread-1",
+    botId: "call-bot",
+    runId,
+    type: "thread.message.created",
+    payload: { messageId: "message-user", role: "user", blocks: [] },
+    createdAt: "2026-09-20T00:00:00.000Z",
+  } as ProductEvent;
+}
+
+function snapshot(messages: ThreadMessage[], run: ThreadSnapshot["run"] = null): ThreadSnapshot {
   return {
     botId: "call-bot",
     threadId: "thread-1",
     cursor: 3,
     messages,
     olderCursor: null,
-    run: null,
+    run,
   };
 }
