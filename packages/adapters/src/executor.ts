@@ -2049,6 +2049,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
               const judge = await provider.review(reviewRequest, reviewContext);
+              if (context.signal.aborted) return;
               reviewReason = judge.reason;
               gateDecision = applyJudgeDecision({
                 decision: judge.decision,
@@ -2065,6 +2066,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 });
               }
             } catch {
+              // Cancellation must not write a review the next attempt would reuse.
+              if (context.signal.aborted) return;
               // Auth/refresh failures must fail closed like a checker error, not fail the run.
               reviewReason = "Checker could not authenticate.";
               gateDecision = applyJudgeDecision({
@@ -2110,6 +2113,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           } else if (applied?.duplicate && plan === "ask") {
             gateDecision = "ask";
           }
+          if (context.signal.aborted) return pauseForApproval();
 
           const needsApproval = gateDecision === "ask";
           const bypassApproval = gateDecision === "allow" && requiresApprovalByDefault;

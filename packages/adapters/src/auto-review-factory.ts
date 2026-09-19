@@ -1,9 +1,9 @@
 import type { AutoReviewProvider, AutoReviewRequest, AutoReviewResult } from "@rakazo/adapter-kit";
+import type { LlmAutoReviewOptions } from "./auto-review.js";
 import {
   autoReviewMinConfidence,
   autoReviewTimeoutMs,
   DEFAULT_JEV_MODEL,
-  type LlmAutoReviewOptions,
   LlmAutoReviewProvider,
   resolveAutoReviewProviderKind,
   typesafeApiKey,

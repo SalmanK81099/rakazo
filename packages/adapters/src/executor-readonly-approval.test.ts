@@ -53,6 +53,17 @@ function fixture({
     title: "Assistant",
     description: "Test assistant",
   },
+  shutdownSignal,
+}: {
+  name?: string;
+  catalog?: boolean;
+  rules?: ActionApprovalRule[];
+  autoReview?: boolean;
+  trigger?: string;
+  secrets?: string[];
+  prompt?: string;
+  bot?: { name: string; title: string; description: string };
+  shutdownSignal?: AbortSignal;
 } = {}) {
   const tool: ConnectorTool = {
     name,
@@ -210,6 +221,7 @@ function fixture({
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets,
     autoReview: autoReviewProvider,
+    shutdownSignal,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
   return {
     effects,
@@ -458,6 +470,24 @@ describe("connector read-only metadata and approval enforcement", () => {
         }),
         expect.objectContaining({ runId: "run-1" }),
       );
+    });
+
+    it("does not persist a review decision when the run is cancelled", async () => {
+      const shutdown = new AbortController();
+      reviewMock.mockImplementation(async () => {
+        shutdown.abort();
+        return { decision: "error", reason: "Checker timed out or failed.", model: "mock" };
+      });
+      const f = fixture({
+        catalog,
+        name: "demo_send_message",
+        autoReview: true,
+        shutdownSignal: shutdown.signal,
+      });
+      await f.run();
+      expect(f.effects[0]?.reviewDecision).toBeUndefined();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
     });
   });
 });
