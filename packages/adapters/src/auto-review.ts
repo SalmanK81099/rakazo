@@ -140,7 +140,7 @@ export function isAutoReviewCheckerConfigured(input: {
   const checker = resolveAutoReviewChecker(env);
   if (!checker) return false;
   if (checker.provider === JEV_AUTO_REVIEW_PROVIDER) return Boolean(typesafeApiKey(env));
-  if (checker.provider === SCRIPTED_AUTO_REVIEW_PROVIDER) return false;
+  if (checker.provider === SCRIPTED_AUTO_REVIEW_PROVIDER) return true;
   if (checker.provider === LOCAL_PROVIDER_ID) return localModelIds(env).length > 0;
 
   const deployment = resolveDeploymentModel(env);
@@ -280,9 +280,13 @@ export async function runAutoReviewJudge(input: {
   botId: string;
   threadId: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<AutoReviewJudgeResult> {
   const modelLabel = `${input.checker.provider}/${input.checker.model}`;
   const timeoutMs = input.timeoutMs ?? autoReviewTimeoutMs();
+  const signal = input.signal
+    ? AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)])
+    : AbortSignal.timeout(timeoutMs);
   let text = "";
   let failed = false;
   try {
@@ -312,7 +316,7 @@ export async function runAutoReviewJudge(input: {
         traceId: `auto-review:${input.runId}`,
         spaceId: input.spaceId,
         userId: input.userId,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       },
     )) {
       if (
@@ -373,10 +377,11 @@ export class LlmAutoReviewProvider implements AutoReviewProvider {
     };
   }
 
-  review(request: AutoReviewRequest, _context: AdapterContext): Promise<AutoReviewResult> {
+  review(request: AutoReviewRequest, context: AdapterContext): Promise<AutoReviewResult> {
     return runAutoReviewJudge({
       ...this.options,
       prompt: buildAutoReviewPrompt(request),
+      signal: context.signal,
     });
   }
 }

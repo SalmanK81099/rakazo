@@ -50,6 +50,24 @@ describe("createAutoReviewProvider", () => {
     expect(() => createAutoReviewProvider("llm")).toThrow(/runtime checker/i);
   });
 
+  it("resolves the default kind from options.env instead of process.env", () => {
+    expect(
+      createAutoReviewProvider(undefined, {
+        env: { RAKAZO_AUTO_REVIEW_PROVIDER: "scripted", AGENT_RUNTIME: "scripted" },
+      }),
+    ).toBeInstanceOf(ScriptedAutoReviewProvider);
+    expect(
+      createAutoReviewProvider(undefined, {
+        env: { RAKAZO_AUTO_REVIEW_PROVIDER: "jev", TYPESAFE_API_KEY: "ts-key" },
+      }),
+    ).toBeInstanceOf(JevAutoReviewProvider);
+    expect(
+      createAutoReviewProvider("scripted", {
+        env: { RAKAZO_AUTO_REVIEW_PROVIDER: "jev", TYPESAFE_API_KEY: "ts-key" },
+      }),
+    ).toBeInstanceOf(ScriptedAutoReviewProvider);
+  });
+
   it("uses the scripted emulator for deterministic offline answers", async () => {
     const pass = createAutoReviewProvider("scripted") as AutoReviewProvider;
     await expect(pass.review(request, context)).resolves.toEqual({

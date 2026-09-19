@@ -46,6 +46,13 @@ function fixture({
   rules = [] as ActionApprovalRule[],
   autoReview = false,
   trigger = "user",
+  secrets = [] as string[],
+  prompt = "Read the item",
+  bot = {
+    name: "Assistant",
+    title: "Assistant",
+    description: "Test assistant",
+  },
 } = {}) {
   const tool: ConnectorTool = {
     name,
@@ -123,9 +130,9 @@ function fixture({
     bot: {
       findUniqueOrThrow: vi.fn(async () => ({
         id: run.botId,
-        name: "Assistant",
-        title: "Assistant",
-        description: "Test assistant",
+        name: bot.name,
+        title: bot.title,
+        description: bot.description,
         computerId: "computer-1",
         computer: { id: "computer-1", scope: "dedicated" },
       })),
@@ -138,7 +145,7 @@ function fixture({
     },
     thread: { findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId: null })) },
     message: { findMany: vi.fn(async () => []) },
-    task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt: "Read the item" })) },
+    task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt })) },
     connection: { findMany: vi.fn(async () => []) },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     userModelCredential: { findFirst: vi.fn(async () => null) },
@@ -201,7 +208,7 @@ function fixture({
     memoryProviders: { resolve: async () => null },
     events: { append: vi.fn(async () => undefined), pauseRunForInput, finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
-    secrets: [],
+    secrets,
     autoReview: autoReviewProvider,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
   return {
@@ -428,5 +435,29 @@ describe("connector read-only metadata and approval enforcement", () => {
         expect(f.pauseRunForInput).toHaveBeenCalledTimes(decision === "pass" ? 0 : 1);
       },
     );
+
+    it("redacts run secrets from automatic review task and bot context", async () => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const f = fixture({
+        catalog,
+        name: "demo_send_message",
+        autoReview: true,
+        secrets: ["super-secret-token"],
+        prompt: "Send mail with super-secret-token",
+        bot: {
+          name: "Mail",
+          title: "Helper",
+          description: "Uses super-secret-token",
+        },
+      });
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userTask: "Send mail with [redacted]",
+          botDescription: "Mail: Helper\nUses [redacted]",
+        }),
+        expect.objectContaining({ runId: "run-1" }),
+      );
+    });
   });
 });

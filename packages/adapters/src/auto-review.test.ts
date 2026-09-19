@@ -134,6 +134,16 @@ describe("isAutoReviewCheckerConfigured", () => {
         },
       }),
     ).toBe(false);
+    expect(
+      isAutoReviewCheckerConfigured({
+        env: { RAKAZO_AUTO_REVIEW_PROVIDER: "scripted", AGENT_RUNTIME: "scripted" },
+      }),
+    ).toBe(true);
+    expect(
+      isAutoReviewCheckerConfigured({
+        env: { RAKAZO_AUTO_REVIEW_PROVIDER: "scripted" },
+      }),
+    ).toBe(false);
   });
 });
 
@@ -341,5 +351,53 @@ describe("runAutoReviewJudge timeout", () => {
         timeoutMs: 50,
       }),
     ).resolves.toMatchObject({ decision: "error" });
+  });
+
+  it("aborts the judge when the parent signal cancels", async () => {
+    vi.resetModules();
+    const { runAutoReviewJudge } = await import("./auto-review.js");
+    const parent = new AbortController();
+    let seen: AbortSignal | undefined;
+    const runtime = {
+      describe: () => ({ capabilities: { scripted: false } }),
+      run: (_request: unknown, context: { signal: AbortSignal }) => {
+        seen = context.signal;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                if (context.signal.aborted) {
+                  throw new DOMException("Aborted", "AbortError");
+                }
+                return {
+                  value: {
+                    type: "done",
+                    text: '{"decision":"pass","reason":"fits the task"}',
+                  },
+                  done: false,
+                };
+              },
+            };
+          },
+        } as AsyncIterable<never>;
+      },
+      abort: async () => {},
+    };
+    parent.abort();
+    await expect(
+      runAutoReviewJudge({
+        runtime: runtime as never,
+        checker: { provider: "openrouter", model: "x" },
+        prompt: "test",
+        runId: "run",
+        spaceId: "ws",
+        userId: "user",
+        botId: "bot",
+        threadId: "thread",
+        timeoutMs: 5_000,
+        signal: parent.signal,
+      }),
+    ).resolves.toMatchObject({ decision: "error" });
+    expect(seen?.aborted).toBe(true);
   });
 });

@@ -27,11 +27,11 @@ export type CreateAutoReviewProviderOptions = {
  * `jev` needs TYPESAFE_API_KEY; `llm` wraps the existing JSON judge; `scripted` is offline.
  */
 export function createAutoReviewProvider(
-  kind: string = resolveAutoReviewProviderKind(),
+  kind?: string,
   options: CreateAutoReviewProviderOptions = {},
 ): AutoReviewProvider {
   const env = options.env ?? process.env;
-  switch (kind) {
+  switch (kind ?? resolveAutoReviewProviderKind(env)) {
     case "jev": {
       const apiKey = options.apiKey ?? typesafeApiKey(env);
       if (!apiKey) throw new Error("TYPESAFE_API_KEY is required");

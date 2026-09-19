@@ -92,6 +92,23 @@ describe("JevAutoReviewProvider", () => {
     });
   });
 
+  it("asks when pass is missing confidence", async () => {
+    const provider = new JevAutoReviewProvider({
+      apiKey: "ts-key",
+      minConfidence: 0.7,
+      fetch: async () =>
+        jsonResponse({
+          model: "jev-latest",
+          answers: { decision: { type: "choice", choice: "pass" } },
+        }),
+    });
+    await expect(provider.review(request, context)).resolves.toEqual({
+      decision: "ask",
+      reason: "Checker is unsure.",
+      model: "jev/jev-latest",
+    });
+  });
+
   it("maps invalid answers to error", async () => {
     const provider = new JevAutoReviewProvider({
       apiKey: "ts-key",

@@ -1988,8 +1988,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 toolName: name,
                 connectorKind,
                 args: redactToolArgsForReview(args, runSecrets),
-                userTask: task.prompt,
-                botDescription: `${bot.name}: ${bot.title}\n${bot.description}`,
+                userTask: redactSecrets(task.prompt, runSecrets),
+                botDescription: redactSecrets(
+                  `${bot.name}: ${bot.title}\n${bot.description}`,
+                  runSecrets,
+                ),
                 matchingRules: approvalResolved.matchingRules,
               };
               const reviewContext: AdapterContext = {
@@ -1999,7 +2002,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 userId: run.userId,
                 botId: bot.id,
                 runId,
-                signal: AbortSignal.timeout(autoReviewTimeoutMs()),
+                signal: AbortSignal.any([
+                  context.signal,
+                  AbortSignal.timeout(autoReviewTimeoutMs()),
+                ]),
               };
               let provider = injectedReview;
               if (!provider) {
@@ -2007,14 +2013,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 if (kind === "jev" || kind === "scripted") {
                   provider = createAutoReviewProvider(kind);
                 } else {
-                  const reviewCredential =
-                    checker!.provider === credential?.provider
-                      ? credential
-                      : await findModelCredential(
-                          deps.prisma,
-                          { userId: run.userId, spaceId: run.spaceId },
-                          checker!.provider,
-                        );
+                  const reviewCredential = await findModelCredential(
+                    deps.prisma,
+                    { userId: run.userId, spaceId: run.spaceId },
+                    checker!.provider,
+                    checker!.model,
+                  );
                   const judgeKey = await resolveModelKey(
                     deps,
                     run.userId,

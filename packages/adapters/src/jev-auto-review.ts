@@ -158,7 +158,7 @@ export class JevAutoReviewProvider implements AutoReviewProvider {
       return { decision: "ask", model };
     }
     if (answer.choice === "pass") {
-      if (typeof answer.confidence === "number" && answer.confidence < this.minConfidence) {
+      if (typeof answer.confidence !== "number" || answer.confidence < this.minConfidence) {
         return {
           decision: "ask",
           reason: sanitizeAutoReviewReason("Checker is unsure."),
