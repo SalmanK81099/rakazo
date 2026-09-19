@@ -295,6 +295,8 @@ export const ThreadMessageSchema = z.object({
   replyToMessageId: Id.optional(),
   replyQuote: z.string().optional(),
   runId: Id.optional(),
+  /** Set when the message was sent from a live voice call; groups one call's transcript. */
+  callId: z.string().optional(),
   createdAt: z.string(),
 });
 export type ThreadMessage = z.infer<typeof ThreadMessageSchema>;
