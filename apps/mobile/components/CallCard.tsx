@@ -244,9 +244,9 @@ const styles = StyleSheet.create({
   initialText: { fontSize: 13, fontWeight: "600" },
   actions: { flexDirection: "row", justifyContent: "center", gap: 12, marginTop: 12 },
   button: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",

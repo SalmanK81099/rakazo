@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CallClip, CallDeps } from "./call-session";
-import { endCall, getSnapshot, startCall, toggleMute } from "./call-session";
+import { endCall, getSnapshot, startCall, subscribe, toggleMute } from "./call-session";
 
 vi.mock("expo-file-system", () => ({ File: class {}, Paths: {} }));
 vi.mock("./voice", () => ({ speakText: vi.fn() }));
@@ -122,6 +122,33 @@ describe("mobile call session", () => {
     await flush();
     expect(getSnapshot()).toBeNull();
     expect(fake.unwatch).toHaveBeenCalled();
+  });
+
+  it("reports a failed recording and retries, then hangs up cleanly", async () => {
+    const fake = fakes();
+    let attempts = 0;
+    startCall(
+      { botId: "bot-1", botName: "Ada" },
+      {
+        ...fake.deps,
+        record: (signal) => {
+          attempts += 1;
+          return attempts === 1 ? Promise.reject(new Error("mic busy")) : fake.deps.record(signal);
+        },
+      },
+    );
+    const captions: string[] = [];
+    const stop = subscribe(() => {
+      const caption = getSnapshot()?.caption;
+      if (caption) captions.push(caption);
+    });
+    await flush();
+    stop();
+    expect(captions).toContain("mic busy");
+    expect(getSnapshot()?.phase).toBe("listening");
+    expect(attempts).toBe(2);
+    endCall();
+    expect(getSnapshot()).toBeNull();
   });
 
   it("aborts the bot feed on hang up", () => {

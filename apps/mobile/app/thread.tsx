@@ -1304,8 +1304,8 @@ function Thread() {
   async function startVoiceCall() {
     if (!botId) return;
     try {
-      const status = await rpc<{ ready: boolean }>("voice/status");
-      if (!status.ready) {
+      const status = await rpc<{ ready: boolean; transcribe: boolean }>("voice/status");
+      if (!status.ready || !status.transcribe) {
         router.push("/voice");
         return;
       }

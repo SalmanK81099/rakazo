@@ -1,4 +1,5 @@
 import { ACTIVE_RUN_STATUSES, abortableDelay, isFarewell } from "@rakazo/core";
+import type { AudioRecorder } from "expo-audio";
 import { File } from "expo-file-system";
 import { useSyncExternalStore } from "react";
 import {
@@ -222,13 +223,14 @@ async function recordClip(signal: AbortSignal): Promise<CallClip | null> {
   const { AudioModule, RecordingPresets, setAudioModeAsync } = await import("expo-audio");
   const permission = await AudioModule.requestRecordingPermissionsAsync();
   if (!permission.granted) throw new Error(t("Allow microphone access to call a bot."));
-  await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-  const recorder = new AudioModule.AudioRecorder({
-    ...RecordingPresets.HIGH_QUALITY,
-    isMeteringEnabled: true,
-  });
+  let recorder: AudioRecorder | undefined;
   let heardSpeech = false;
   try {
+    await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+    recorder = new AudioModule.AudioRecorder({
+      ...RecordingPresets.HIGH_QUALITY,
+      isMeteringEnabled: true,
+    });
     await recorder.prepareToRecordAsync();
     recorder.record();
     let quietMs = 0;
@@ -256,7 +258,7 @@ async function recordClip(signal: AbortSignal): Promise<CallClip | null> {
     deleteQuietly(uri);
     return { base64, mimeType: "audio/m4a" };
   } finally {
-    recorder.release();
+    recorder?.release();
     await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
   }
 }
