@@ -120,33 +120,98 @@ describe("call session", () => {
     expect(getSnapshot()?.exchanges.at(-1)).toEqual({ role: "bot", text: "Booked for Friday" });
 
     const speech = vi.mocked(speaker.subscribe).mock.calls[0]?.[0];
+    listen.mockClear();
     speech?.({ status: "speaking", caption: "Booked for Friday" });
+    await Promise.resolve();
     expect(getSnapshot()?.phase).toBe("speaking");
+    // Dictation runs through playback so the caller can cut in.
+    expect(listen).toHaveBeenCalledTimes(1);
 
     listen.mockClear();
     speech?.({ status: "idle" });
     await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
     expect(getSnapshot()?.phase).toBe("listening");
-    expect(listen).toHaveBeenCalledTimes(1);
+    expect(listen).not.toHaveBeenCalled();
   });
 
-  it("waits out the echo guard after the speaker goes idle before opening the mic", async () => {
+  it("waits out the echo guard when the mic was shut through playback", async () => {
     startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
-    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Booked for Friday")]) as never);
-    await heard("book the flight");
+    await Promise.resolve();
+    toggleMute();
     listen.mockClear();
 
     const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
     speech?.({ status: "speaking", caption: "Booked for Friday" });
     await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS * 2);
     expect(listen).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("speaking");
 
     speech?.({ status: "idle" });
     await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS - 1);
-    expect(listen).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("speaking");
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(listen).toHaveBeenCalledTimes(1);
+    expect(getSnapshot()?.phase).toBe("listening");
+  });
+
+  it("ignores the reply leaking into the mic while it plays", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await speakingReply("I'm here and hearing you");
+    send.mockClear();
+    vi.mocked(speaker.stop).mockClear();
+
+    await heard("hey I am here and here");
+
+    expect(send).not.toHaveBeenCalled();
+    expect(speaker.stop).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("speaking");
+  });
+
+  it("stops the reply when the caller talks over it", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const speech = await speakingReply("Booked for Friday");
+    send.mockClear();
+    speak.mockClear();
+    vi.mocked(speaker.stop).mockClear();
+
+    await heard("wait, what about the deploy");
+
+    expect(speaker.stop).toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "wait, what about the deploy" }),
+    );
+    expect(getSnapshot()?.phase).toBe("thinking");
+
+    // The cut-off reply is spoken, so nothing resumes it and no guard runs.
+    speech?.({ status: "idle" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
+    expect(speak).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("thinking");
+  });
+
+  it("lets a one-word interruption cut the reply short", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await speakingReply("Booked for Friday");
+    send.mockClear();
+    vi.mocked(speaker.stop).mockClear();
+
+    await heard("stop");
+
+    expect(speaker.stop).toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "stop" }));
+  });
+
+  it("keeps playing through a one-word backchannel", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await speakingReply("Booked for Friday");
+    send.mockClear();
+    vi.mocked(speaker.stop).mockClear();
+
+    await heard("yeah");
+
+    expect(send).not.toHaveBeenCalled();
+    expect(speaker.stop).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("speaking");
   });
 
   it("drops a transcript that is the reply coming back through the mic", async () => {
@@ -307,6 +372,16 @@ describe("call session", () => {
     ]);
   });
 });
+
+/** Drives a call to the point where the bot's reply is playing and the mic is open. */
+async function speakingReply(text: string) {
+  getThread.mockResolvedValue(snapshot([botMessage("message-1", text)]) as never);
+  await heard("book the flight");
+  const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+  speech?.({ status: "speaking", caption: text });
+  await Promise.resolve();
+  return speech;
+}
 
 async function heard(text: string) {
   const onFinal = listen.mock.calls.at(-1)?.[0]?.onFinal;

@@ -41,6 +41,10 @@ const FAREWELL_TIMEOUT = 20_000;
  * if a measured tail actually outruns it.
  */
 export const ECHO_GUARD_MS = 600;
+/** While audio plays, most of what the mic hears is the speaker: match on fewer words. */
+const PLAYBACK_ECHO_RATIO = 0.4;
+/** The only one-word turns worth cutting a reply short for. */
+const INTERRUPT_WORDS = new Set(["stop", "wait", "hold on", "pause", "no"]);
 
 let state: CallState | null = null;
 /** Shared by every message this call sends, so the thread can group one call's exchange. */
@@ -56,6 +60,10 @@ let hangUpAfterReply = false;
 let hangUpTimer: ReturnType<typeof setTimeout> | null = null;
 /** Pending echo guard: the microphone stays shut until it fires. */
 let guardTimer: ReturnType<typeof setTimeout> | null = null;
+/** Whether dictation is running, so playback can leave it open instead of restarting it. */
+let micOpen = false;
+/** The caller cut the reply off: there is no tail left to wait out before listening. */
+let bargedIn = false;
 /** What the speaker played last, so the same words coming back in can be dropped. */
 let lastSpoken = "";
 const narrated = new Set<string>();
@@ -96,6 +104,8 @@ export function startCall(call: {
   callId = randomId();
   transcribe = call.transcribe;
   lastSpoken = "";
+  micOpen = false;
+  bargedIn = false;
   state = {
     botId: call.botId,
     botName: call.botName,
@@ -111,8 +121,11 @@ export function startCall(call: {
   unsubSpeech = speaker.subscribe((speech) => {
     if (!state) return;
     if (speech.status === "speaking") {
+      bargedIn = false;
       set({ phase: "speaking", caption: speech.caption ?? "" });
-    } else if (speech.status === "idle" && state.phase !== "listening") {
+      // The mic stays open through playback so the caller can talk over the reply.
+      void openMic();
+    } else if (speech.status === "idle" && state.phase !== "listening" && !bargedIn) {
       set({ caption: "" });
       guardThenListen();
     }
@@ -138,6 +151,8 @@ export function endCall(): void {
   hangUpTimer = null;
   if (guardTimer) clearTimeout(guardTimer);
   guardTimer = null;
+  micOpen = false;
+  bargedIn = false;
   unsubSpeech?.();
   unsubDictation?.();
   unsubSpeech = null;
@@ -158,10 +173,12 @@ export function toggleMute(): void {
   set({ muted });
   if (muted) {
     dictation.stop("cancel");
+    micOpen = false;
     set({ heard: "" });
     return;
   }
   if (state.phase === "listening") void listen();
+  else if (state.phase === "speaking") void openMic();
 }
 
 export function toggleTranscript(): void {
@@ -197,6 +214,11 @@ function commit(next: ThreadSnapshot | null) {
 
 /** The tail of playback reaches the microphone after the audio element ends. */
 function guardThenListen() {
+  // Dictation ran right through playback: there is no shut mic to hold closed.
+  if (micOpen) {
+    void listen();
+    return;
+  }
   if (guardTimer) clearTimeout(guardTimer);
   guardTimer = setTimeout(() => {
     guardTimer = null;
@@ -219,8 +241,16 @@ async function listen() {
   speaker.stop();
   if (state.muted || pendingSecretAsk(thread)) {
     dictation.stop("cancel");
+    micOpen = false;
     return;
   }
+  await openMic();
+}
+
+/** Starts dictation unless it is already running, muted, or waiting on a typed secret. */
+async function openMic() {
+  if (!state || micOpen || state.muted || pendingSecretAsk(thread)) return;
+  micOpen = true;
   try {
     await dictation.listen({
       mode: "endpoint",
@@ -228,15 +258,29 @@ async function listen() {
       onFinal: (text) => void handleTranscript(text),
     });
   } catch (error) {
+    micOpen = false;
     set({ caption: errorText(error, t`Microphone failed`) });
   }
 }
 
 async function handleTranscript(text: string) {
   if (!state) return;
+  // Dictation stopped itself to deliver this final.
+  micOpen = false;
   if (!text.trim()) {
     void listen();
     return;
+  }
+  if (state.phase === "speaking") {
+    if (!isBargeIn(text)) {
+      set({ heard: "" });
+      void openMic();
+      return;
+    }
+    // The caller talked over the reply: cut the audio, and never resume that message.
+    bargedIn = true;
+    speaker.stop();
+    set({ phase: "thinking", caption: "" });
   }
   dictation.stop("submit");
   // The microphone caught the reply, not the caller: drop it and keep listening.
@@ -284,11 +328,26 @@ async function handleTranscript(text: string) {
   }
 }
 
+/**
+ * True when a transcript heard during playback is the caller cutting in rather than
+ * the reply leaking back into the mic: a real sentence, or a short interruption word.
+ */
+function isBargeIn(text: string): boolean {
+  if (isEchoOfSpeech(text, lastSpoken, PLAYBACK_ECHO_RATIO)) return false;
+  const cleaned = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+  return cleaned.includes(" ") || INTERRUPT_WORDS.has(cleaned);
+}
+
 /** Speak whatever the call's bot said last, then narrate progress while it keeps working. */
 function reactToThread() {
   if (!state) return;
   if (pendingSecretAsk(thread)) {
     dictation.stop("cancel");
+    micOpen = false;
     set({ heard: "" });
   }
   if (state.phase === "listening") return;
@@ -300,9 +359,9 @@ function reactToThread() {
     const ask = lastBot.blocks.find((block) => block.kind === "ask" && block.status !== "answered");
     const secretAsk = ask && isSecretAskBlock(ask);
     if (text) {
+      // Never spoken again, interrupted or not.
       spokenMessageIds.add(lastBot.id);
-      dictation.stop("cancel");
-      set({ exchanges: [...state.exchanges, { role: "bot", text }] });
+      set({ exchanges: [...state.exchanges, { role: "bot", text }], heard: "" });
       lastSpoken = text;
       void speaker.speak(
         secretAsk

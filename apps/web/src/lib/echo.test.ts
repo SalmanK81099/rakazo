@@ -25,6 +25,11 @@ describe("isEchoOfSpeech", () => {
     ).toBe(false);
   });
 
+  it("drops a looser overlap only at the playback threshold", () => {
+    expect(isEchoOfSpeech("I am here what about that", SPOKEN)).toBe(false);
+    expect(isEchoOfSpeech("I am here what about that", SPOKEN, 0.4)).toBe(true);
+  });
+
   it("keeps everything when nothing was spoken", () => {
     expect(isEchoOfSpeech("I am here in", "")).toBe(false);
   });

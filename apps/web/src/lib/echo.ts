@@ -27,11 +27,18 @@ function words(text: string): string[] {
 /**
  * True when a transcript is the microphone catching the reply that just played.
  *
+ * `threshold` is the share of heard words that must match; lower it while audio is
+ * still playing, when far more of what the mic picks up is the speaker.
+ *
  * ponytail: in-order word overlap, no acoustics. It can still drop a short genuine
  * turn that quotes the reply back; move to an energy/echo-cancellation signal from
  * the audio graph if that shows up in practice.
  */
-export function isEchoOfSpeech(heard: string, spoken: string): boolean {
+export function isEchoOfSpeech(
+  heard: string,
+  spoken: string,
+  threshold = ECHO_MATCH_RATIO,
+): boolean {
   const heardWords = words(heard);
   const spokenWords = words(spoken);
   if (heardWords.length > MAX_ECHO_WORDS || !spokenWords.length) return false;
@@ -44,5 +51,5 @@ export function isEchoOfSpeech(heard: string, spoken: string): boolean {
     cursor = at + 1;
   }
   if (matched < MIN_ECHO_WORDS) return false;
-  return matched / heardWords.length >= ECHO_MATCH_RATIO;
+  return matched / heardWords.length >= threshold;
 }
