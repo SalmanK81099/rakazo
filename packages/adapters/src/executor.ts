@@ -7,6 +7,7 @@ import type {
   AgentRuntime,
   AgentToolCompletion,
   ArtifactStore,
+  AutoReviewProvider,
   BrowserProvider,
   ComputerRef,
   ConnectorCall,
@@ -140,13 +141,13 @@ import {
 } from "./approval-effect.js";
 import {
   autoReviewTimeoutMs,
-  buildAutoReviewPrompt,
   deploymentAutoReviewDefault,
   isAutoReviewCheckerConfigured,
   redactToolArgsForReview,
   resolveAutoReviewChecker,
-  runAutoReviewJudge,
+  resolveAutoReviewProviderKind,
 } from "./auto-review.js";
+import { createAutoReviewProvider } from "./auto-review-factory.js";
 import { attachedImageArtifactIds, resolveUpdateBotAvatar } from "./bot-avatar.js";
 import { loadBotMessageContext, messageBot, returnBotMessageOutcome } from "./bot-messages.js";
 import {
@@ -569,6 +570,8 @@ export interface ExecutorDeps {
   secretHttp?: RemoteTransportDependencies;
   /** Remote cloud coding agents. Null/omit means tools stay uninjected. */
   cloudAgent?: CloudAgentConnection | null;
+  /** Optional Auto Review verifier. When omitted, the factory selects from env (llm | jev | scripted). */
+  autoReview?: AutoReviewProvider;
   /** Aborted when createApp stop() begins so in-flight continueRun boot waits exit promptly. */
   shutdownSignal?: AbortSignal;
 }
@@ -1922,18 +1925,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const autoReviewPref = requiresMandatoryApproval
             ? false
             : await loadAutoReviewPreference();
+          const injectedReview = requiresMandatoryApproval ? undefined : deps.autoReview;
           const checker = requiresMandatoryApproval ? undefined : resolveAutoReviewChecker();
           const checkerConfigured =
-            autoReviewPref && checker
-              ? isAutoReviewCheckerConfigured({}) ||
-                Boolean(
-                  await findModelCredential(
-                    deps.prisma,
-                    { userId: run.userId, spaceId: run.spaceId },
-                    checker.provider,
-                  ),
-                )
-              : false;
+            autoReviewPref &&
+            (Boolean(injectedReview) ||
+              (checker
+                ? isAutoReviewCheckerConfigured({}) ||
+                  Boolean(
+                    await findModelCredential(
+                      deps.prisma,
+                      { userId: run.userId, spaceId: run.spaceId },
+                      checker.provider,
+                    ),
+                  )
+                : false));
           const plan = requiresMandatoryApproval
             ? "ask"
             : planActionGate({
@@ -1976,49 +1982,69 @@ export function createRunExecutor(deps: ExecutorDeps) {
               );
 
           const runAutoReview = async () => {
-            if (!checker) return;
+            if (!injectedReview && !checker) return;
             try {
-              const reviewCredential =
-                checker.provider === credential?.provider
-                  ? credential
-                  : await findModelCredential(
-                      deps.prisma,
-                      { userId: run.userId, spaceId: run.spaceId },
-                      checker.provider,
-                    );
-              const judgeKey = await resolveModelKey(
-                deps,
-                run.userId,
-                run.spaceId,
-                reviewCredential,
-                checker.provider,
-                checker.model,
-                (values) => runSecrets.push(...values),
-              );
-              const judge = await runAutoReviewJudge({
-                runtime: deps.runtime,
-                checker,
-                apiKey: judgeKey.oauth ? undefined : judgeKey.apiKey,
-                baseUrl: judgeKey.baseUrl,
-                reasoning: judgeKey.reasoning,
-                oauth: judgeKey.oauth
-                  ? { credential: judgeKey.oauth, persist: judgeKey.persistOAuth }
-                  : undefined,
-                prompt: buildAutoReviewPrompt({
-                  toolName: name,
-                  connectorKind,
-                  args: redactToolArgsForReview(args, runSecrets),
-                  userTask: task.prompt,
-                  botDescription: `${bot.name}: ${bot.title}\n${bot.description}`,
-                  matchingRules: approvalResolved.matchingRules,
-                }),
-                runId,
+              const reviewRequest = {
+                toolName: name,
+                connectorKind,
+                args: redactToolArgsForReview(args, runSecrets),
+                userTask: task.prompt,
+                botDescription: `${bot.name}: ${bot.title}\n${bot.description}`,
+                matchingRules: approvalResolved.matchingRules,
+              };
+              const reviewContext: AdapterContext = {
+                operationId: `auto-review:${runId}`,
+                traceId: `auto-review:${runId}`,
                 spaceId: run.spaceId,
                 userId: run.userId,
                 botId: bot.id,
-                threadId: thread.id,
-                timeoutMs: autoReviewTimeoutMs(),
-              });
+                runId,
+                signal: AbortSignal.timeout(autoReviewTimeoutMs()),
+              };
+              let provider = injectedReview;
+              if (!provider) {
+                const kind = resolveAutoReviewProviderKind();
+                if (kind === "jev" || kind === "scripted") {
+                  provider = createAutoReviewProvider(kind);
+                } else {
+                  const reviewCredential =
+                    checker!.provider === credential?.provider
+                      ? credential
+                      : await findModelCredential(
+                          deps.prisma,
+                          { userId: run.userId, spaceId: run.spaceId },
+                          checker!.provider,
+                        );
+                  const judgeKey = await resolveModelKey(
+                    deps,
+                    run.userId,
+                    run.spaceId,
+                    reviewCredential,
+                    checker!.provider,
+                    checker!.model,
+                    (values) => runSecrets.push(...values),
+                  );
+                  provider = createAutoReviewProvider("llm", {
+                    llm: {
+                      runtime: deps.runtime,
+                      checker: checker!,
+                      apiKey: judgeKey.oauth ? undefined : judgeKey.apiKey,
+                      baseUrl: judgeKey.baseUrl,
+                      reasoning: judgeKey.reasoning,
+                      oauth: judgeKey.oauth
+                        ? { credential: judgeKey.oauth, persist: judgeKey.persistOAuth }
+                        : undefined,
+                      runId,
+                      spaceId: run.spaceId,
+                      userId: run.userId,
+                      botId: bot.id,
+                      threadId: thread.id,
+                      timeoutMs: autoReviewTimeoutMs(),
+                    },
+                  });
+                }
+              }
+              const judge = await provider.review(reviewRequest, reviewContext);
               reviewReason = judge.reason;
               gateDecision = applyJudgeDecision({
                 decision: judge.decision,
@@ -2047,14 +2073,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   data: {
                     reviewDecision: "error",
                     reviewReason,
-                    reviewModel: `${checker.provider}/${checker.model}`,
+                    reviewModel: checker
+                      ? `${checker.provider}/${checker.model}`
+                      : (injectedReview?.describe().id ?? "auto-review"),
                   },
                 });
               }
             }
           };
 
-          if (applied && plan === "judge" && checker) {
+          if (applied && plan === "judge" && (injectedReview || checker)) {
             if (!applied.duplicate) {
               await runAutoReview();
             } else {

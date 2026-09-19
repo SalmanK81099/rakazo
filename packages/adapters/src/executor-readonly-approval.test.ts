@@ -1,10 +1,13 @@
-import type { AgentRunRequest, ConnectorCall, ConnectorTool } from "@rakazo/adapter-kit";
+import type {
+  AgentRunRequest,
+  AutoReviewProvider,
+  ConnectorCall,
+  ConnectorTool,
+} from "@rakazo/adapter-kit";
 import type { ActionApprovalRule } from "@rakazo/core";
 import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isApprovalPausedResult } from "./approval-effect.js";
-import type * as AutoReviewModule from "./auto-review.js";
-import { runAutoReviewJudge } from "./auto-review.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
 import { catalogEntries, resolveCatalogCall } from "./lazy-tool-catalog.js";
@@ -15,12 +18,16 @@ vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   provisionComputer: async () => ({ id: "computer-1", kind: "desktop" }),
 }));
 
-vi.mock("./auto-review.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof AutoReviewModule>()),
-  resolveAutoReviewChecker: () => ({ provider: "scripted", model: "checker" }),
-  isAutoReviewCheckerConfigured: () => true,
-  runAutoReviewJudge: vi.fn(),
-}));
+const reviewMock = vi.fn();
+const autoReviewProvider: AutoReviewProvider = {
+  describe: () => ({
+    id: "mock",
+    contractVersion: "1",
+    adapterVersion: "0.1.0",
+    capabilities: { offline: true, keyless: true },
+  }),
+  review: reviewMock,
+};
 
 type Effect = {
   id: string;
@@ -195,6 +202,7 @@ function fixture({
     events: { append: vi.fn(async () => undefined), pauseRunForInput, finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets: [],
+    autoReview: autoReviewProvider,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
   return {
     effects,
@@ -216,7 +224,7 @@ function fixture({
 
 describe("connector read-only metadata and approval enforcement", () => {
   beforeEach(() => {
-    vi.mocked(runAutoReviewJudge).mockReset();
+    reviewMock.mockReset();
   });
 
   it.each(["shell", "write_file"])(
@@ -230,7 +238,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       await f.run();
       expect(f.pauseRunForInput).toHaveBeenCalledOnce();
       expect(isApprovalPausedResult(f.results[0])).toBe(true);
-      expect(runAutoReviewJudge).not.toHaveBeenCalled();
+      expect(reviewMock).not.toHaveBeenCalled();
     },
   );
 
@@ -258,7 +266,7 @@ describe("connector read-only metadata and approval enforcement", () => {
           }),
         );
         expect(isApprovalPausedResult(f.results[0])).toBe(true);
-        expect(runAutoReviewJudge).not.toHaveBeenCalled();
+        expect(reviewMock).not.toHaveBeenCalled();
       },
     );
 
@@ -354,7 +362,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(f.execute).toHaveBeenCalledTimes(2);
       expect(f.results).toEqual([{ item: "item-1" }, { item: "item-1" }]);
       expect(f.pauseRunForInput).not.toHaveBeenCalled();
-      expect(runAutoReviewJudge).not.toHaveBeenCalled();
+      expect(reviewMock).not.toHaveBeenCalled();
     });
 
     it("replays a non-approval connector effect when the tool-call id changes", async () => {
@@ -383,7 +391,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       await f.run();
       expect(f.execute).toHaveBeenCalledOnce();
       expect(f.pauseRunForInput).not.toHaveBeenCalled();
-      expect(runAutoReviewJudge).not.toHaveBeenCalled();
+      expect(reviewMock).not.toHaveBeenCalled();
     });
 
     it("forces owner approval for webhook-triggered writes despite an allow rule", async () => {
@@ -397,20 +405,24 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.pauseRunForInput).toHaveBeenCalledOnce();
       expect(isApprovalPausedResult(f.results[0])).toBe(true);
-      expect(runAutoReviewJudge).not.toHaveBeenCalled();
+      expect(reviewMock).not.toHaveBeenCalled();
     });
 
     it.each(["ask", "error", "pass"] as const)(
       "honors automatic review %s despite a read-only hint",
       async (decision) => {
-        vi.mocked(runAutoReviewJudge).mockResolvedValue({
+        reviewMock.mockResolvedValue({
           decision,
           reason: "Review result",
           model: "scripted/checker",
         });
         const f = fixture({ catalog, name: "demo_send_message", autoReview: true });
         await f.run();
-        expect(runAutoReviewJudge).toHaveBeenCalledOnce();
+        expect(reviewMock).toHaveBeenCalledOnce();
+        expect(reviewMock).toHaveBeenCalledWith(
+          expect.objectContaining({ toolName: "demo_send_message", connectorKind: "demo" }),
+          expect.objectContaining({ runId: "run-1" }),
+        );
         expect(f.effects[0]?.reviewDecision).toBe(decision);
         expect(f.execute).toHaveBeenCalledTimes(decision === "pass" ? 1 : 0);
         expect(f.pauseRunForInput).toHaveBeenCalledTimes(decision === "pass" ? 0 : 1);
