@@ -134,6 +134,48 @@ describe("call session", () => {
     expect(getSnapshot()).toBeNull();
     expect(speaker.stop).toHaveBeenCalled();
   });
+
+  it("tears the previous call down before opening the next call's feed", async () => {
+    const unsubSpeech = vi.fn();
+    const unsubDictation = vi.fn();
+    vi.mocked(speaker.subscribe).mockReturnValueOnce(unsubSpeech);
+    vi.mocked(dictation.subscribe).mockReturnValueOnce(unsubDictation);
+    startCall({ botId: "bot-a", botName: "Ada", transcribe: false });
+    const feedA = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+
+    let abortedWhenNextOpened: boolean | null = null;
+    vi.mocked(runThreadSubscription).mockImplementationOnce(async () => {
+      abortedWhenNextOpened = feedA?.signal.aborted ?? null;
+    });
+    startCall({ botId: "bot-b", botName: "Grace", transcribe: false });
+    await Promise.resolve();
+
+    expect(unsubSpeech).toHaveBeenCalledTimes(1);
+    expect(unsubDictation).toHaveBeenCalledTimes(1);
+    expect(abortedWhenNextOpened).toBe(true);
+    expect(getSnapshot()?.botId).toBe("bot-b");
+  });
+
+  it("hangs up once the bot has answered a goodbye", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Talk soon")]) as never);
+    await heard("that's all, bye");
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: "call-bot", text: "that's all, bye" }),
+    );
+    expect(speak).toHaveBeenCalledWith(
+      "Talk soon",
+      expect.objectContaining({ messageId: "message-1" }),
+    );
+
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "speaking", caption: "Talk soon" });
+    speech?.({ status: "idle" });
+    await Promise.resolve();
+
+    expect(getSnapshot()).toBeNull();
+  });
 });
 
 async function heard(text: string) {

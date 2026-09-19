@@ -1,6 +1,7 @@
 import { t } from "@lingui/core/macro";
 import type { ThreadSnapshot } from "@rakazo/contracts";
 import {
+  isFarewell,
   isSecretAskBlock,
   narrateTool,
   runThreadSubscription,
@@ -30,6 +31,8 @@ export interface CallState {
 }
 
 const RUN_ACTIVE = ["running", "queued", "leased"];
+/** How long a goodbye waits for a reply that may never come before hanging up anyway. */
+const FAREWELL_TIMEOUT = 20_000;
 
 let state: CallState | null = null;
 let transcribe = false;
@@ -38,6 +41,8 @@ let feed: AbortController | null = null;
 let spokenMessageId: string | null = null;
 let unsubSpeech: (() => void) | null = null;
 let unsubDictation: (() => void) | null = null;
+let hangUpAfterReply = false;
+let hangUpTimer: ReturnType<typeof setTimeout> | null = null;
 const narrated = new Set<string>();
 const watchers = new Set<() => void>();
 
@@ -111,6 +116,9 @@ export function startCall(call: {
 export function endCall(): void {
   feed?.abort();
   feed = null;
+  hangUpAfterReply = false;
+  if (hangUpTimer) clearTimeout(hangUpTimer);
+  hangUpTimer = null;
   unsubSpeech?.();
   unsubDictation?.();
   unsubSpeech = null;
@@ -170,6 +178,11 @@ function commit(next: ThreadSnapshot | null) {
 
 async function listen() {
   if (!state) return;
+  // The caller said goodbye: every path back to listening hangs up instead.
+  if (hangUpAfterReply) {
+    endCall();
+    return;
+  }
   set({ phase: "listening", heard: "" });
   speaker.stop();
   if (state.muted || pendingSecretAsk(thread)) {
@@ -201,7 +214,14 @@ async function handleTranscript(text: string) {
   const { botId, exchanges } = state;
   const askId = latestAskId(thread);
   const askMessage = thread?.messages.find((message) => message.id === askId);
+  // Captured now: a call started while this is in flight must not re-attach the new feed.
+  const callFeed = feed;
+  const closing = isFarewell(text);
   set({ heard: text, phase: "thinking", exchanges: [...exchanges, { role: "user", text }] });
+  if (closing) {
+    hangUpAfterReply = true;
+    hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT);
+  }
   try {
     if (askMessage) {
       await rpc.threads.answer({
@@ -216,7 +236,7 @@ async function handleTranscript(text: string) {
       await rpc.threads.send({ botId, clientNonce: clientNonce(), text });
     }
     if (state?.botId !== botId) return;
-    commit(await rpc.threads.get({ botId }, { signal: feed?.signal }));
+    commit(await rpc.threads.get({ botId }, { signal: callFeed?.signal }));
   } catch (error) {
     if (state?.botId !== botId) return;
     set({ caption: errorText(error, t`Could not send that`) });
