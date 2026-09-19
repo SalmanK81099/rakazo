@@ -18,7 +18,6 @@ import {
   computerHomeStorage,
   computerNetworkNameFor,
   computerNetworkNamesForCleanup,
-  computerResourceLimits,
   containerCreateOptions,
   containerNameFor,
   controlPortPublicationMatches,
@@ -670,6 +669,17 @@ describe("computer resource limits", () => {
     expect(HostConfig.PidsLimit).toBe(2048);
   });
 
+  it("falls back to the defaults when a variable is blank", () => {
+    // .env.example ships these keys blank; a blank value must read as "unset".
+    process.env.RAKAZO_COMPUTER_MEMORY = "";
+    process.env.RAKAZO_COMPUTER_CPUS = "  ";
+    process.env.RAKAZO_COMPUTER_PIDS_LIMIT = "";
+    const { HostConfig } = containerCreateOptions(createInput);
+    expect(HostConfig.Memory).toBe(2 * 1024 ** 3);
+    expect(HostConfig.NanoCpus).toBe(2e9);
+    expect(HostConfig.PidsLimit).toBe(2048);
+  });
+
   it("pins MemorySwap to Memory so the ceiling cannot be swapped past", () => {
     process.env.RAKAZO_COMPUTER_MEMORY = "1536m";
     const { HostConfig } = containerCreateOptions(createInput);
@@ -827,31 +837,5 @@ describe("computer home storage", () => {
     );
     // Steady state waits on Xvfb instead of polling, so the trap runs immediately.
     expect(start).toMatch(/^wait "\$XVFB_PID"$/m);
-  });
-});
-
-describe("computerResourceLimits", () => {
-  // .env.example ships these keys blank, so a blank value must read as "unset", not as a
-  // malformed size that fails supervisor startup.
-  it("falls back to the defaults when a variable is blank", () => {
-    const previous = {
-      memory: process.env.RAKAZO_COMPUTER_MEMORY,
-      cpus: process.env.RAKAZO_COMPUTER_CPUS,
-      pids: process.env.RAKAZO_COMPUTER_PIDS_LIMIT,
-    };
-    process.env.RAKAZO_COMPUTER_MEMORY = "";
-    process.env.RAKAZO_COMPUTER_CPUS = "  ";
-    process.env.RAKAZO_COMPUTER_PIDS_LIMIT = "";
-    try {
-      expect(computerResourceLimits()).toMatchObject({
-        Memory: 2 * 1024 ** 3,
-        NanoCpus: 2e9,
-        PidsLimit: 2048,
-      });
-    } finally {
-      process.env.RAKAZO_COMPUTER_MEMORY = previous.memory;
-      process.env.RAKAZO_COMPUTER_CPUS = previous.cpus;
-      process.env.RAKAZO_COMPUTER_PIDS_LIMIT = previous.pids;
-    }
   });
 });
