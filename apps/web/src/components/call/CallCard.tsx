@@ -1,17 +1,31 @@
 import { useLingui } from "@lingui/react/macro";
 import { BotAvatar, Button, cn } from "@rakazo/ui-web";
 import { Captions, Mic, MicOff, PhoneOff, Settings, User } from "lucide-react";
+import { useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { endCall, toggleMute, toggleTranscript, useCallSession } from "../../lib/call-session";
 
 const BARS = [9, 15, 21, 15, 9];
 const TRANSCRIPT_LINES = 4;
+const EDITABLE = /^(?:input|textarea|select)$/i;
 
 export function CallCard({ onSettings }: { onSettings: () => void }) {
   const { t } = useLingui();
   const call = useCallSession();
   const navigate = useNavigate();
   const { botId } = useParams();
+  const onCall = Boolean(call);
+  useEffect(() => {
+    if (!onCall) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.isContentEditable || EDITABLE.test(target?.tagName ?? "")) return;
+      endCall();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCall]);
   if (!call) return null;
   const onBotScreen = botId === call.botId;
   return (
