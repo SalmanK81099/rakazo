@@ -1,7 +1,7 @@
 import type { ProductEvent, ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
 import { callIdFromClientNonce, runThreadSubscription } from "@rakazo/core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { endCall, getSnapshot, startCall, toggleMute } from "./call-session";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ECHO_GUARD_MS, endCall, getSnapshot, startCall, toggleMute } from "./call-session";
 import { dictation } from "./dictation.js";
 import { rpc } from "./rpc.js";
 import { reduceThreadSnapshot } from "./thread-events.js";
@@ -58,10 +58,16 @@ describe("call session", () => {
   beforeEach(() => {
     endCall();
     vi.clearAllMocks();
+    vi.useFakeTimers();
     isSpeaking.mockReturnValue(false);
     listen.mockResolvedValue(undefined);
     getThread.mockResolvedValue(snapshot([]) as never);
     send.mockResolvedValue({ runId: "run-1", taskId: "task-1" } as never);
+  });
+
+  afterEach(() => {
+    endCall();
+    vi.useRealTimers();
   });
 
   it("starts listening for the bot on the call", async () => {
@@ -119,9 +125,50 @@ describe("call session", () => {
 
     listen.mockClear();
     speech?.({ status: "idle" });
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
     expect(getSnapshot()?.phase).toBe("listening");
     expect(listen).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits out the echo guard after the speaker goes idle before opening the mic", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Booked for Friday")]) as never);
+    await heard("book the flight");
+    listen.mockClear();
+
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "speaking", caption: "Booked for Friday" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS * 2);
+    expect(listen).not.toHaveBeenCalled();
+
+    speech?.({ status: "idle" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS - 1);
+    expect(listen).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(listen).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a transcript that is the reply coming back through the mic", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    getThread.mockResolvedValue(
+      snapshot([botMessage("message-1", "I'm here and hearing you")]) as never,
+    );
+    await heard("book the flight");
+    send.mockClear();
+    listen.mockClear();
+
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "idle" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
+    await heard("hey I am here and here");
+
+    expect(send).not.toHaveBeenCalled();
+    expect(getSnapshot()?.exchanges.at(-1)).toEqual({
+      role: "bot",
+      text: "I'm here and hearing you",
+    });
+    expect(listen).toHaveBeenCalledTimes(2);
   });
 
   it("stops listening while muted", async () => {
@@ -189,7 +236,7 @@ describe("call session", () => {
     const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
     speech?.({ status: "speaking", caption: "Talk soon" });
     speech?.({ status: "idle" });
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
 
     expect(getSnapshot()).toBeNull();
   });
@@ -238,13 +285,13 @@ describe("call session", () => {
     isSpeaking.mockReturnValue(true);
     const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
     speech?.({ status: "idle" });
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
     expect(listen).not.toHaveBeenCalled();
     expect(getSnapshot()?.phase).not.toBe("listening");
 
     isSpeaking.mockReturnValue(false);
     speech?.({ status: "idle" });
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
     expect(listen).toHaveBeenCalledTimes(1);
   });
 

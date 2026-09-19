@@ -201,7 +201,9 @@ export class Dictation {
   ) {
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
     } catch (error) {
       if (this.token !== mine) return;
       this.set({

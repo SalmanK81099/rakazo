@@ -11,6 +11,7 @@ import {
 } from "@rakazo/core";
 import { useSyncExternalStore } from "react";
 import { dictation } from "./dictation.js";
+import { isEchoOfSpeech } from "./echo.js";
 import { rpc } from "./rpc.js";
 import { isThreadSnapshotEvent, reduceThreadSnapshot, rememberCallRun } from "./thread-events.js";
 import { speaker } from "./tts.js";
@@ -34,6 +35,12 @@ export interface CallState {
 const RUN_ACTIVE = ["running", "queued", "leased"];
 /** How long a goodbye waits for a reply that may never come before hanging up anyway. */
 const FAREWELL_TIMEOUT = 20_000;
+/**
+ * Quiet gap between the last audio frame and opening the microphone.
+ * ponytail: one fixed delay for every room and output device; make it adaptive only
+ * if a measured tail actually outruns it.
+ */
+export const ECHO_GUARD_MS = 600;
 
 let state: CallState | null = null;
 /** Shared by every message this call sends, so the thread can group one call's exchange. */
@@ -47,6 +54,10 @@ let unsubSpeech: (() => void) | null = null;
 let unsubDictation: (() => void) | null = null;
 let hangUpAfterReply = false;
 let hangUpTimer: ReturnType<typeof setTimeout> | null = null;
+/** Pending echo guard: the microphone stays shut until it fires. */
+let guardTimer: ReturnType<typeof setTimeout> | null = null;
+/** What the speaker played last, so the same words coming back in can be dropped. */
+let lastSpoken = "";
 const narrated = new Set<string>();
 const watchers = new Set<() => void>();
 
@@ -84,6 +95,7 @@ export function startCall(call: {
   endCall();
   callId = randomId();
   transcribe = call.transcribe;
+  lastSpoken = "";
   state = {
     botId: call.botId,
     botName: call.botName,
@@ -102,7 +114,7 @@ export function startCall(call: {
       set({ phase: "speaking", caption: speech.caption ?? "" });
     } else if (speech.status === "idle" && state.phase !== "listening") {
       set({ caption: "" });
-      void listen();
+      guardThenListen();
     }
     if (speech.error) set({ caption: speech.error });
   });
@@ -124,6 +136,8 @@ export function endCall(): void {
   hangUpAfterReply = false;
   if (hangUpTimer) clearTimeout(hangUpTimer);
   hangUpTimer = null;
+  if (guardTimer) clearTimeout(guardTimer);
+  guardTimer = null;
   unsubSpeech?.();
   unsubDictation?.();
   unsubSpeech = null;
@@ -181,6 +195,15 @@ function commit(next: ThreadSnapshot | null) {
   return next;
 }
 
+/** The tail of playback reaches the microphone after the audio element ends. */
+function guardThenListen() {
+  if (guardTimer) clearTimeout(guardTimer);
+  guardTimer = setTimeout(() => {
+    guardTimer = null;
+    void listen();
+  }, ECHO_GUARD_MS);
+}
+
 async function listen() {
   if (!state) return;
   // The caller said goodbye: every path back to listening hangs up instead.
@@ -190,6 +213,8 @@ async function listen() {
   }
   // A reply still playing owns the audio session; its idle event calls back here.
   if (speaker.isSpeaking()) return;
+  // A guard is already counting down the quiet gap; it calls back here when it ends.
+  if (guardTimer) return;
   set({ phase: "listening", heard: "" });
   speaker.stop();
   if (state.muted || pendingSecretAsk(thread)) {
@@ -214,6 +239,12 @@ async function handleTranscript(text: string) {
     return;
   }
   dictation.stop("submit");
+  // The microphone caught the reply, not the caller: drop it and keep listening.
+  if (isEchoOfSpeech(text, lastSpoken)) {
+    set({ heard: "" });
+    void listen();
+    return;
+  }
   if (pendingSecretAsk(thread)) {
     set({ heard: "", caption: t`Hang up, then enter the code on screen.` });
     return;
@@ -272,6 +303,7 @@ function reactToThread() {
       spokenMessageIds.add(lastBot.id);
       dictation.stop("cancel");
       set({ exchanges: [...state.exchanges, { role: "bot", text }] });
+      lastSpoken = text;
       void speaker.speak(
         secretAsk
           ? `${text}. ${t`Hang up first, then enter the code on screen.`}`
@@ -309,7 +341,8 @@ function reactToThread() {
     }
   }
   if (phrases.length) {
-    void speaker.speak(phrases.join(". "), { botId, messageId: `narrate:${lastKey}` });
+    lastSpoken = phrases.join(". ");
+    void speaker.speak(lastSpoken, { botId, messageId: `narrate:${lastKey}` });
   }
 }
 
