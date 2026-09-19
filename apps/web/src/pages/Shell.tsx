@@ -141,6 +141,7 @@ import {
   computersAreUnavailable,
 } from "../components/ComputersUnavailableHint";
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
+import { CallCard } from "../components/call/CallCard";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
 import { SkillDraftCard } from "../components/teach/SkillDraftCard";
 import { TeachCaptureOverlay } from "../components/teach/TeachCaptureOverlay";
@@ -160,6 +161,7 @@ import {
   requestBrowserNotificationPermission,
   shouldNotifyBrowser,
 } from "../lib/browser-notifications";
+import { startCall, useCallSession } from "../lib/call-session";
 import { newClientId } from "../lib/client-id";
 import {
   embeddableScreenUrl,
@@ -261,7 +263,6 @@ const PluginsOverlay = lazy(() =>
 const McpServersOverlay = lazy(() =>
   import("./McpServersOverlay").then((module) => ({ default: module.McpServersOverlay })),
 );
-const CallView = lazy(() => import("./CallView").then((module) => ({ default: module.CallView })));
 
 type Panel =
   | "computer"
@@ -462,7 +463,7 @@ export function ShellPage() {
     SpaceMemoryConfig | null | undefined
   >(undefined);
   const memoryProviderConfigRevision = useRef(0);
-  const [callOpen, setCallOpen] = useState(false);
+  const call = useCallSession();
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [dismissedRunErrorIds, setDismissedRunErrorIds] =
@@ -1147,7 +1148,7 @@ export function ShellPage() {
       autoSpoken.current = lastBot?.id ?? null;
       return;
     }
-    if (callOpen || !active.autoSpeak) {
+    if (call?.botId === active.id || !active.autoSpeak) {
       autoSpoken.current = lastBot?.id ?? null;
       return;
     }
@@ -1163,7 +1164,7 @@ export function ShellPage() {
     snapshot?.botId,
     active?.autoSpeak,
     active?.id,
-    callOpen,
+    call?.botId,
   ]);
 
   useEffect(() => {
@@ -2123,12 +2124,6 @@ export function ShellPage() {
       t,
     ],
   );
-  const followUpMessage = useCallback(async (text: string) => {
-    const id = activeBotId.current;
-    if (!id) return;
-    await rpc.threads.followUp({ botId: id, text });
-    await refreshThreadRef.current(id);
-  }, []);
   const stopRun = useCallback(async () => {
     if (sending) return;
     setSending(true);
@@ -3391,7 +3386,12 @@ export function ShellPage() {
                       openSettings("voice");
                       return;
                     }
-                    setCallOpen(true);
+                    startCall({
+                      botId: active.id,
+                      botName: active.name,
+                      botColor: active.color,
+                      transcribe: Boolean(voiceStatus?.transcribe),
+                    });
                   }
                 : undefined
             }
@@ -3422,6 +3422,8 @@ export function ShellPage() {
           />
         ) : null}
       </main>
+
+      <CallCard onSettings={() => openSettings("voice")} />
 
       <aside
         data-testid="side-panel"
@@ -4180,7 +4182,7 @@ export function ShellPage() {
                   await Promise.race([rpc.voice.status(), voiceStatusRefreshTimeout()]),
                 );
               } catch {
-                // Prefer reopening Voice settings over CallView with stale readiness.
+                // Prefer reopening Voice settings over starting a call with stale readiness.
                 setVoiceStatus(null);
               }
             }}
@@ -4201,18 +4203,6 @@ export function ShellPage() {
               resolveTranscriptBot(peerConversation.peerBotId)?.color ?? FALLBACK_BOT_COLOR
             }
             onClose={() => setPeerConversation(null)}
-          />
-        ) : null}
-        {callOpen && active ? (
-          <CallView
-            botId={active.id}
-            botName={active.name}
-            transcribe={Boolean(voiceStatus?.transcribe)}
-            snapshot={activeSnapshot}
-            onSend={sendMessage}
-            onFollowUp={followUpMessage}
-            onAnswer={answerMessage}
-            onClose={() => setCallOpen(false)}
           />
         ) : null}
       </Suspense>
