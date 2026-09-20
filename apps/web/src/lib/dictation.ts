@@ -156,7 +156,6 @@ export class Dictation {
     rec.lang = navigator.language || "en-US";
     // Chrome numbers results per session, so a restart starts over: keep the earlier text.
     let carried = "";
-    let settled = "";
     rec.onresult = (event) => {
       if (this.token !== mine) return;
       let session = "";
@@ -166,10 +165,11 @@ export class Dictation {
       const transcript = `${carried} ${session}`.trim();
       this.set({ status: "listening", transcript });
       if (mode !== "endpoint") return;
-      // Only new words restart the window: a result that repeats what we already
-      // have is Chrome re-reporting, not the caller still talking.
-      if (transcript === settled) return;
-      settled = transcript;
+      // Every result means the caller was just heard, so the quiet gap is measured from
+      // here. That includes Chrome finalising a phrase it already reported: its phrase
+      // boundary is a breath, and the words repeat, so a window tied to new text alone
+      // expires before Chrome opens its first interim for the rest of the sentence.
+      if (!transcript) return;
       clearTimeout(this.silenceTimer);
       this.silenceTimer = setTimeout(() => {
         if (this.token !== mine) return;

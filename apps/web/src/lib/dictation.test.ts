@@ -529,12 +529,23 @@ describe("Dictation web speech", () => {
     vi.stubGlobal("navigator", { language: "en-US" });
   });
 
+  type Part = string | { transcript: string; isFinal: true };
+
   /** One onresult carrying the whole session so far, the way Chrome reports it. */
-  function said(rec: FakeRecognition | undefined, ...parts: string[]) {
+  function said(rec: FakeRecognition | undefined, ...parts: Part[]) {
     rec?.onresult?.({
       resultIndex: 0,
-      results: parts.map((transcript) => [{ transcript }]),
+      results: parts.map((part) => {
+        const { transcript, isFinal } =
+          typeof part === "string" ? { transcript: part, isFinal: false } : part;
+        return Object.assign([{ transcript }], { isFinal });
+      }),
     });
+  }
+
+  /** Chrome flips a result to final at its own phrase boundary, mid-sentence. */
+  function done(transcript: string): Part {
+    return { transcript, isFinal: true };
   }
 
   it("rides out a pause in the middle of a sentence", async () => {
@@ -557,6 +568,30 @@ describe("Dictation web speech", () => {
     await vi.advanceTimersByTimeAsync(200);
     expect(onFinal).toHaveBeenCalledTimes(1);
     expect(onFinal).toHaveBeenCalledWith("okay it is based on the new project");
+  });
+
+  it("keeps the window open when Chrome finalises words it already reported", async () => {
+    vi.useFakeTimers();
+    const onFinal = vi.fn();
+    const dictation = new Dictation();
+    await dictation.listen({ mode: "endpoint", onFinal });
+    const rec = instances[0];
+
+    said(rec, "okay tell me");
+    await vi.advanceTimersByTimeAsync(400);
+    // Chrome's phrase boundary: the same words again, this time final. The caller only
+    // took a breath, so the quiet gap starts here, not at the first guess at the phrase.
+    said(rec, done("okay tell me"));
+    await vi.advanceTimersByTimeAsync(900);
+    expect(onFinal).not.toHaveBeenCalled();
+
+    said(rec, done("okay tell me"), " about the projects");
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(onFinal).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(onFinal).toHaveBeenCalledTimes(1);
+    expect(onFinal).toHaveBeenCalledWith("okay tell me about the projects");
   });
 
   it("never ends the turn because the browser ended the session", async () => {
