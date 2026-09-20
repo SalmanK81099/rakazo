@@ -604,4 +604,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not hear that.": "没有听清。",
   "Could not transcribe that.": "无法转写。",
   "Could not speak that.": "无法朗读。",
+  "Voice chat": "语音通话",
+  "Show transcript": "显示字幕",
+  "Hide transcript": "隐藏字幕",
 };

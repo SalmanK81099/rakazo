@@ -1,13 +1,13 @@
 import { useLingui } from "@lingui/react/macro";
-import { speechFromBlocks } from "@rakazo/core";
-import { buttonVariants, cn } from "@rakazo/ui-web";
-import { AudioLines, ChevronDown } from "lucide-react";
-import { useState } from "react";
 import {
+  speechFromBlocks,
   type VoiceChatGroup,
   voiceChatDuration,
   voiceChatSummary,
-} from "../../lib/voice-chat-groups";
+} from "@rakazo/core";
+import { buttonVariants, cn } from "@rakazo/ui-web";
+import { AudioLines, ChevronDown } from "lucide-react";
+import { useState } from "react";
 
 function clock(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;

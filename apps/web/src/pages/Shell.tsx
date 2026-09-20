@@ -39,6 +39,7 @@ import {
   clampMentionHighlightIndex,
   cronFromPreset,
   groupBotsForSidebar,
+  groupVoiceChats,
   inferAttachmentMimeType,
   isActive,
   isPeerReceiptBlocks,
@@ -208,7 +209,6 @@ import {
   transcriptMovedDown,
 } from "../lib/transcript-scroll";
 import { speaker } from "../lib/tts";
-import { groupVoiceChats } from "../lib/voice-chat-groups";
 import { ActivityList } from "./ActivityList";
 import type { ContextMenuPosition } from "./BotContextMenu";
 import { CreateGroupForm, GroupSettings, memberName } from "./GroupPanel";

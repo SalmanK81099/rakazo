@@ -17,6 +17,7 @@ import {
   buildComposerMentionOptions,
   type ComposerMention,
   cloudAgentHttpsUrl,
+  groupVoiceChats,
   isApprovalAskBlock,
   isRunTerminalEvent,
   isSecretAskBlock,
@@ -28,6 +29,7 @@ import {
   type SlashActionId,
   selectedAskActionLabel,
   serializeComposerPrompt,
+  type ThreadItem,
   truncateSlashDescription,
   userVisibleMessages,
   withLiveStreamingProgress,
@@ -76,6 +78,7 @@ import {
   type MarkdownArtifactPreviewTarget,
 } from "../components/markdown-artifact-preview";
 import { NativeSymbol } from "../components/native-symbol";
+import { VoiceChatCard } from "../components/VoiceChatCard";
 import { WorkingIndicator } from "../components/WorkingIndicator";
 import {
   applyMobileThreadEvent,
@@ -264,7 +267,7 @@ function Thread() {
   const inGroup = Boolean(groupId);
   const call = useCallSession();
   const onCall = Boolean(botId) && call?.botId === botId;
-  const scroll = useRef<FlatList<MobileMessage>>(null);
+  const scroll = useRef<FlatList<ThreadItem<MobileMessage>>>(null);
   const pinnedScroll = useRef<ScrollView>(null);
   const scrollBehavior = useRef(new ThreadScrollBehavior());
   const userDragging = useRef(false);
@@ -1376,7 +1379,8 @@ function Thread() {
 
   const answerableAskMessageId = latestAnswerableAskMessageId(snap);
   const runError = snap?.run?.status === "failed" ? (snap.run.error ?? null) : null;
-  const liveMessages = useMemo(() => [...visibleMessages].reverse(), [visibleMessages]);
+  // Group calls in reading order, then reverse for the inverted list.
+  const liveItems = useMemo(() => groupVoiceChats(visibleMessages).reverse(), [visibleMessages]);
   const messagesById = useMemo(
     () => new Map((snap?.messages ?? []).map((message) => [message.id, message])),
     [snap?.messages],
@@ -1688,9 +1692,11 @@ function Thread() {
           <FlatList
             key={threadKey}
             ref={scroll}
-            data={liveMessages}
+            data={liveItems}
             inverted
-            keyExtractor={(message) => message.id}
+            keyExtractor={(item) =>
+              item.kind === "voiceChat" ? `call:${item.callId}` : item.message.id
+            }
             extraData={answerableAskMessageId}
             style={{ flex: 1, marginTop: 8 }}
             maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
@@ -1725,7 +1731,15 @@ function Thread() {
             }}
             ListFooterComponent={loadEarlierControl}
             ListHeaderComponent={workingFooter}
-            renderItem={({ item }) => renderMessageRow(item)}
+            renderItem={({ item }) =>
+              item.kind === "voiceChat" ? (
+                <View style={{ marginTop: 12, width: "100%" }}>
+                  <VoiceChatCard group={item} />
+                </View>
+              ) : (
+                renderMessageRow(item.message)
+              )
+            }
           />
         )}
         {!showPinnedPage && threadScrollState.detached ? (

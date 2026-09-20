@@ -621,4 +621,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not hear that.": "Не удалось расслышать.",
   "Could not transcribe that.": "Не удалось распознать речь.",
   "Could not speak that.": "Не удалось озвучить.",
+  "Voice chat": "Голосовой чат",
+  "Show transcript": "Показать расшифровку",
+  "Hide transcript": "Скрыть расшифровку",
 };

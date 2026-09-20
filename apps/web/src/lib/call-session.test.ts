@@ -1,5 +1,5 @@
 import type { ProductEvent, ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
-import { callIdFromClientNonce, runThreadSubscription } from "@rakazo/core";
+import { callIdFromClientNonce, groupVoiceChats, runThreadSubscription } from "@rakazo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ECHO_GUARD_MS,
@@ -13,7 +13,6 @@ import { dictation } from "./dictation.js";
 import { rpc } from "./rpc.js";
 import { reduceThreadSnapshot } from "./thread-events.js";
 import { speaker } from "./tts.js";
-import { groupVoiceChats } from "./voice-chat-groups.js";
 
 // The macro compiles away in the app build; tests run the source, so tag the template as-is.
 vi.mock("@lingui/core/macro", () => ({

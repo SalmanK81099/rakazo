@@ -1,6 +1,6 @@
 import type { ThreadMessage } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { groupVoiceChats, voiceChatDuration, voiceChatSummary } from "./voice-chat-groups";
+import { groupVoiceChats, voiceChatDuration, voiceChatSummary } from "./voice-chat-groups.js";
 
 let seq = 0;
 function message(fields: Partial<ThreadMessage> & { role: ThreadMessage["role"] }): ThreadMessage {

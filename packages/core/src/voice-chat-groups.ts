@@ -1,14 +1,26 @@
-import type { ThreadMessage } from "@rakazo/contracts";
-import { speechFromBlocks } from "@rakazo/core";
+import type { MessageBlock } from "@rakazo/contracts";
+import { speechFromBlocks } from "./speech-text.js";
 
-export type VoiceChatGroup = {
+/** The fields grouping reads; web `ThreadMessage` and mobile `MobileMessage` both satisfy it. */
+export type VoiceChatMessage = {
+  id: string;
+  role: string;
+  runId?: string;
+  callId?: string;
+  createdAt?: string;
+  blocks: MessageBlock[];
+};
+
+export type VoiceChatGroup<T extends VoiceChatMessage = VoiceChatMessage> = {
   kind: "voiceChat";
   callId: string;
-  messages: ThreadMessage[];
+  messages: T[];
   /** The `voice_call` message the bot left when it hung up; it closes the group. */
-  marker?: ThreadMessage;
+  marker?: T;
 };
-export type ThreadItem = { kind: "message"; message: ThreadMessage } | VoiceChatGroup;
+export type ThreadItem<T extends VoiceChatMessage = VoiceChatMessage> =
+  | { kind: "message"; message: T }
+  | VoiceChatGroup<T>;
 
 const SUMMARY_MAX = 120;
 
@@ -19,9 +31,9 @@ const SUMMARY_MAX = 120;
  * even when it reuses the run of a call turn. The bot's `voice_call` marker
  * closes the group, so the work it does after hanging up renders as chat.
  */
-export function groupVoiceChats(messages: ThreadMessage[]): ThreadItem[] {
-  const items: ThreadItem[] = [];
-  let open: VoiceChatGroup | undefined;
+export function groupVoiceChats<T extends VoiceChatMessage>(messages: T[]): ThreadItem<T>[] {
+  const items: ThreadItem<T>[] = [];
+  let open: VoiceChatGroup<T> | undefined;
   let openRunIds = new Set<string>();
   for (const message of messages) {
     if (open) {
@@ -51,7 +63,7 @@ export function groupVoiceChats(messages: ThreadMessage[]): ThreadItem[] {
   return items;
 }
 
-function isCallMarker(message: ThreadMessage): boolean {
+function isCallMarker(message: VoiceChatMessage): boolean {
   return message.role === "bot" && message.blocks[0]?.kind === "voice_call";
 }
 
@@ -77,6 +89,6 @@ export function voiceChatDuration(group: VoiceChatGroup): number {
   const first = group.messages[0];
   const last = group.messages[group.messages.length - 1];
   if (!first || !last) return 0;
-  const seconds = (Date.parse(last.createdAt) - Date.parse(first.createdAt)) / 1000;
+  const seconds = (Date.parse(last.createdAt ?? "") - Date.parse(first.createdAt ?? "")) / 1000;
   return Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
 }
