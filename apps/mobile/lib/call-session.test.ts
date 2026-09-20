@@ -1,6 +1,6 @@
 import { callIdFromClientNonce } from "@rakazo/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CallClip, CallDeps } from "./call-session";
+import type { CallClip, CallDeps, CallEnded } from "./call-session";
 import { endCall, getSnapshot, startCall, subscribe, toggleMute } from "./call-session";
 
 vi.mock("expo-file-system", () => ({ File: class {}, Paths: {} }));
@@ -32,7 +32,8 @@ function fakes() {
   const send = vi.fn(async (_botId: string, _text: string, _clientNonce: string) => undefined);
   const unwatch = vi.fn();
   let reply: (messageId: string, text: string) => void = () => undefined;
-  let ended: (callId: string | undefined) => void = () => undefined;
+  let ended: (ended: CallEnded) => void = () => undefined;
+  const spoken: string[] = [];
   const deps: CallDeps = {
     record: (signal) => {
       signals.push(signal);
@@ -43,7 +44,8 @@ function fakes() {
     // The fake clip carries the words, so transcription is the identity.
     transcribe: async (clip) => clip.base64,
     send,
-    speak: () => {
+    speak: (_botId, text) => {
+      spoken.push(text);
       const next = deferred<void>();
       speeches.push(next);
       return next.promise;
@@ -59,12 +61,13 @@ function fakes() {
     recordings,
     signals,
     speeches,
+    spoken,
     send,
     unwatch,
     say: (text: string) =>
       recordings[recordings.length - 1]?.resolve({ base64: text, mimeType: "audio/m4a" }),
     replyWith: (messageId: string, text: string) => reply(messageId, text),
-    endedCall: (callId: string | undefined) => ended(callId),
+    endedCall: (callId: string | undefined, farewell?: string) => ended({ callId, farewell }),
   };
 }
 
@@ -153,18 +156,29 @@ describe("mobile call session", () => {
     expect(fake.unwatch).toHaveBeenCalled();
   });
 
-  it("hangs up after the reply when the bot ends the call itself", async () => {
+  it("speaks the farewell and hangs up when the bot ends the call itself", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
     fake.say("end the call and make me a list");
     await flush();
-    fake.endedCall(callIdFromClientNonce(fake.send.mock.calls[0]?.[2]));
-    fake.replyWith("message-1", "Talk soon.");
+    fake.endedCall(callIdFromClientNonce(fake.send.mock.calls[0]?.[2]), "Talk soon.");
     expect(getSnapshot()?.phase).toBe("speaking");
+    expect(fake.spoken).toEqual(["Talk soon."]);
     fake.speeches[0]?.resolve();
     await flush();
 
     expect(getSnapshot()).toBeNull();
+  });
+
+  it("never speaks the work the bot files after it hung up", async () => {
+    const fake = fakes();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    fake.say("end the call and make me a list");
+    await flush();
+    fake.endedCall(callIdFromClientNonce(fake.send.mock.calls[0]?.[2]), "Talk soon.");
+    fake.replyWith("message-1", "Here is the list.");
+
+    expect(fake.spoken).toEqual(["Talk soon."]);
   });
 
   it("ignores a call ended event from another call", async () => {
@@ -172,7 +186,7 @@ describe("mobile call session", () => {
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
     fake.say("status please");
     await flush();
-    fake.endedCall("someone-elses-call");
+    fake.endedCall("someone-elses-call", "Talk soon.");
     fake.replyWith("message-1", "It is green.");
     fake.speeches[0]?.resolve();
     await flush();

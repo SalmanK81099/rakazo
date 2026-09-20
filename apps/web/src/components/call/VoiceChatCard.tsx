@@ -51,6 +51,8 @@ export function VoiceChatCard({ group }: { group: VoiceChatGroup }) {
       {open ? (
         <div className="space-y-1.5 px-3 pb-3 text-sm">
           {group.messages.map((message) => {
+            // The marker is the card's summary line, never a transcript turn.
+            if (message === group.marker) return null;
             const text = speechFromBlocks(message.blocks).trim();
             if (!text) return null;
             return (

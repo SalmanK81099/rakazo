@@ -40,9 +40,12 @@ export type CallDeps = {
   watch: (
     botId: string,
     onReply: (messageId: string, text: string) => void,
-    onCallEnded: (callId: string | undefined) => void,
+    onCallEnded: (ended: CallEnded) => void,
   ) => () => void;
 };
+
+/** What the bot's own `end_call` carries: the call it ends and the goodbye to speak. */
+export type CallEnded = { callId?: string; farewell?: string };
 
 /** How long a goodbye waits for a reply that may never come before hanging up anyway. */
 const FAREWELL_TIMEOUT_MS = 20_000;
@@ -63,6 +66,8 @@ let deps: CallDeps = productionDeps();
 let turn: AbortController | null = null;
 let unwatch: (() => void) | null = null;
 let hangUpAfterReply = false;
+/** The bot hung up itself: its farewell is the last thing this call speaks. */
+let botEndedCall = false;
 let hangUpTimer: ReturnType<typeof setTimeout> | null = null;
 let spokenMessageId: string | null = null;
 let failures = 0;
@@ -124,6 +129,7 @@ export function endCall(): void {
   if (hangUpTimer) clearTimeout(hangUpTimer);
   hangUpTimer = null;
   hangUpAfterReply = false;
+  botEndedCall = false;
   spokenMessageId = null;
   failures = 0;
   if (!state) return;
@@ -194,8 +200,14 @@ async function listen(): Promise<void> {
 }
 
 function onReply(messageId: string, text: string): void {
-  if (!state || messageId === spokenMessageId) return;
+  // Work the bot files after hanging up belongs in the thread, not in the caller's ear.
+  if (!state || botEndedCall || messageId === spokenMessageId) return;
   spokenMessageId = messageId;
+  speakAndListen(text);
+}
+
+function speakAndListen(text: string): void {
+  if (!state) return;
   turn?.abort();
   turn = null;
   const { botId } = state;
@@ -211,11 +223,20 @@ function onReply(messageId: string, text: string): void {
     });
 }
 
-/** The bot hung up mid-run: speak the reply it is finishing, then end the call. */
-function onCallEnded(endedCallId: string | undefined): void {
-  if (!state || endedCallId !== callId || hangUpAfterReply) return;
+/** The bot hung up: speak the goodbye it wrote, then end — the rest lands in the thread. */
+function onCallEnded(ended: CallEnded): void {
+  if (!state || ended.callId !== callId || botEndedCall) return;
   hangUpAfterReply = true;
+  botEndedCall = true;
+  if (hangUpTimer) clearTimeout(hangUpTimer);
   hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT_MS);
+  const farewell = ended.farewell?.trim();
+  // Nothing to say: hang up instead of waiting out the fallback.
+  if (!farewell) {
+    endCall();
+    return;
+  }
+  speakAndListen(farewell);
 }
 
 function errorText(error: unknown, fallback: string): string {
@@ -313,7 +334,7 @@ async function speakReply(botId: string, text: string): Promise<void> {
 function watchReplies(
   botId: string,
   onNewReply: (messageId: string, text: string) => void,
-  onEnded: (callId: string | undefined) => void,
+  onEnded: (ended: CallEnded) => void,
 ): () => void {
   const controller = new AbortController();
   void (async () => {
@@ -328,7 +349,10 @@ function watchReplies(
       snapshot.cursor ?? 0,
       (event) => {
         if (event.type === "thread.call.ended") {
-          onEnded(typeof event.payload?.callId === "string" ? event.payload.callId : undefined);
+          onEnded({
+            callId: asText(event.payload?.callId),
+            farewell: asText(event.payload?.farewell),
+          });
           return;
         }
         snapshot = applyMobileThreadEvent(snapshot, event) ?? snapshot;
@@ -345,6 +369,10 @@ function watchReplies(
     );
   })().catch(() => undefined);
   return () => controller.abort();
+}
+
+function asText(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function lastBotMessage(snapshot: MobileSnapshot | null): MobileMessage | undefined {

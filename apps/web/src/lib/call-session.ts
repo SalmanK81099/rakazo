@@ -62,6 +62,8 @@ const spokenMessageIds = new Set<string>();
 let unsubSpeech: (() => void) | null = null;
 let unsubDictation: (() => void) | null = null;
 let hangUpAfterReply = false;
+/** The bot hung up itself: its farewell is the last thing this call speaks. */
+let botEndedCall = false;
 let hangUpTimer: ReturnType<typeof setTimeout> | null = null;
 /** Pending echo guard: the microphone stays shut until it fires. */
 let guardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -156,6 +158,7 @@ export function endCall(): void {
   feed?.abort();
   feed = null;
   hangUpAfterReply = false;
+  botEndedCall = false;
   if (hangUpTimer) clearTimeout(hangUpTimer);
   hangUpTimer = null;
   if (guardTimer) clearTimeout(guardTimer);
@@ -213,13 +216,34 @@ function watchThread(botId: string) {
       if (isThreadSnapshotEvent(event)) commit(reduceThreadSnapshot(thread, event));
     },
     onEvent: (event) => {
-      // The bot hung up mid-run: speak the reply it is finishing, then end the call.
+      // The bot hung up: speak the farewell it wrote and stop there — the rest of its
+      // work lands in the thread as chat, which the caller is no longer listening to.
       if (event.type !== "thread.call.ended" || event.payload.callId !== callId) return;
-      if (hangUpAfterReply) return;
+      if (botEndedCall) return;
       hangUpAfterReply = true;
+      botEndedCall = true;
+      if (hangUpTimer) clearTimeout(hangUpTimer);
       hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT);
+      speakFarewell(event.payload);
     },
   });
+}
+
+/** The bot's own goodbye: the last thing this call says before the speaker goes idle. */
+function speakFarewell(payload: Record<string, unknown>) {
+  if (!state) return;
+  const farewell = typeof payload.farewell === "string" ? payload.farewell.trim() : "";
+  const messageId = typeof payload.messageId === "string" ? payload.messageId : undefined;
+  if (messageId) spokenMessageIds.add(messageId);
+  // Nothing to say: hang up instead of waiting out the fallback.
+  if (!farewell) {
+    endCall();
+    return;
+  }
+  awaitingReply = false;
+  set({ exchanges: [...state.exchanges, { role: "bot", text: farewell }], heard: "" });
+  spokenMemory.remember(farewell);
+  void speaker.speak(farewell, { botId: state.botId, messageId });
 }
 
 function commit(next: ThreadSnapshot | null) {
@@ -405,6 +429,8 @@ function clearInterim() {
  */
 function reactToThread() {
   if (!state) return;
+  // The bot already said goodbye: neither its marker nor the work it files after it is spoken.
+  if (botEndedCall) return;
   if (pendingSecretAsk(thread)) {
     dictation.stop("cancel");
     micOpen = false;

@@ -62,6 +62,30 @@ describe("groupVoiceChats", () => {
     expect(items.map((item) => item.kind)).toEqual(["voiceChat", "message", "message"]);
     expect(items[0]?.kind === "voiceChat" && items[0].messages).toHaveLength(2);
   });
+
+  it("closes the group at the call marker and leaves later work of that run outside", () => {
+    const items = groupVoiceChats([
+      message({ role: "user", callId: "call-1", runId: "run-1" }),
+      message({ role: "bot", runId: "run-1" }),
+      message({
+        role: "bot",
+        runId: "run-1",
+        blocks: [{ kind: "voice_call", callId: "call-1", title: "Made a list", farewell: "Bye" }],
+      }),
+      message({
+        role: "bot",
+        runId: "run-1",
+        blocks: [{ kind: "text", text: "Here is the list" }],
+      }),
+    ]);
+
+    const group = items[0];
+    expect(items.map((item) => item.kind)).toEqual(["voiceChat", "message"]);
+    expect(group?.kind === "voiceChat" && group.messages).toHaveLength(3);
+    expect(group?.kind === "voiceChat" && group.marker?.id).toBe(
+      group?.kind === "voiceChat" ? group.messages[2]?.id : undefined,
+    );
+  });
 });
 
 describe("voiceChatSummary", () => {
@@ -76,6 +100,24 @@ describe("voiceChatSummary", () => {
     ]);
 
     expect(group?.kind === "voiceChat" && voiceChatSummary(group)).toBe("Deploy is green.");
+  });
+
+  it("prefers the title the bot hung up with", () => {
+    const [group] = groupVoiceChats([
+      message({ role: "user", callId: "call-1", runId: "run-1" }),
+      message({
+        role: "bot",
+        runId: "run-1",
+        blocks: [{ kind: "text", text: "Deploy is green. I also restarted the worker." }],
+      }),
+      message({
+        role: "bot",
+        runId: "run-1",
+        blocks: [{ kind: "voice_call", callId: "call-1", title: "Deploy check", farewell: "Bye" }],
+      }),
+    ]);
+
+    expect(group?.kind === "voiceChat" && voiceChatSummary(group)).toBe("Deploy check");
   });
 });
 

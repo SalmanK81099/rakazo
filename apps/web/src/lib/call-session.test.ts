@@ -356,17 +356,17 @@ describe("call session", () => {
     expect(getSnapshot()).toBeNull();
   });
 
-  it("hangs up after the reply when the bot ends the call itself", async () => {
+  it("speaks the farewell and hangs up when the bot ends the call itself", async () => {
     startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
     const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
-    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Talk soon")]) as never);
+    getThread.mockResolvedValue(snapshot([], runningRun) as never);
     await heard("end the call and make me a list");
     const callId = String(callIdFromClientNonce(String(send.mock.calls[0]?.[0]?.clientNonce)));
 
     feed?.onEvent?.(callEndedEvent(callId), { threadId: "thread-1", cursor: 3 });
     expect(speak).toHaveBeenCalledWith(
       "Talk soon",
-      expect.objectContaining({ messageId: "message-1" }),
+      expect.objectContaining({ messageId: "message-marker" }),
     );
 
     const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
@@ -375,6 +375,21 @@ describe("call session", () => {
     await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
 
     expect(getSnapshot()).toBeNull();
+  });
+
+  it("never speaks the work the bot files after it hung up", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+    getThread.mockResolvedValue(snapshot([], runningRun) as never);
+    await heard("end the call and make me a list");
+    const callId = String(callIdFromClientNonce(String(send.mock.calls[0]?.[0]?.clientNonce)));
+    feed?.onEvent?.(callEndedEvent(callId), { threadId: "thread-1", cursor: 3 });
+    expect(speak).toHaveBeenCalledTimes(1);
+
+    getThread.mockResolvedValue(snapshot([botMessage("message-2", "Here is the list")]) as never);
+    await feed?.refresh();
+
+    expect(speak).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a call ended event from another call", async () => {
@@ -657,7 +672,7 @@ const runningRun = {
   createdAt: "2026-09-20T00:00:00.000Z",
 } as ThreadSnapshot["run"];
 
-function callEndedEvent(callId: string): ProductEvent {
+function callEndedEvent(callId: string, farewell = "Talk soon"): ProductEvent {
   return {
     id: "event-2",
     seq: 6,
@@ -666,7 +681,15 @@ function callEndedEvent(callId: string): ProductEvent {
     botId: "call-bot",
     runId: "run-1",
     type: "thread.call.ended",
-    payload: { botId: "call-bot", threadId: "thread-1", runId: "run-1", callId },
+    payload: {
+      botId: "call-bot",
+      threadId: "thread-1",
+      runId: "run-1",
+      callId,
+      title: "Made a list",
+      farewell,
+      messageId: "message-marker",
+    },
     createdAt: "2026-09-20T00:00:00.000Z",
   } as ProductEvent;
 }

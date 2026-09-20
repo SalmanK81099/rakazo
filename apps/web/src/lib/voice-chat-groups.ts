@@ -1,7 +1,13 @@
 import type { ThreadMessage } from "@rakazo/contracts";
 import { speechFromBlocks } from "@rakazo/core";
 
-export type VoiceChatGroup = { kind: "voiceChat"; callId: string; messages: ThreadMessage[] };
+export type VoiceChatGroup = {
+  kind: "voiceChat";
+  callId: string;
+  messages: ThreadMessage[];
+  /** The `voice_call` message the bot left when it hung up; it closes the group. */
+  marker?: ThreadMessage;
+};
 export type ThreadItem = { kind: "message"; message: ThreadMessage } | VoiceChatGroup;
 
 const SUMMARY_MAX = 120;
@@ -10,7 +16,8 @@ const SUMMARY_MAX = 120;
  * Collapses each run of consecutive call messages into one group: a user
  * message carrying the call's `callId`, or a bot reply to a run already in the
  * group. Anything else ends the run — a typed user message breaks the group
- * even when it reuses the run of a call turn.
+ * even when it reuses the run of a call turn. The bot's `voice_call` marker
+ * closes the group, so the work it does after hanging up renders as chat.
  */
 export function groupVoiceChats(messages: ThreadMessage[]): ThreadItem[] {
   const items: ThreadItem[] = [];
@@ -23,6 +30,11 @@ export function groupVoiceChats(messages: ThreadMessage[]): ThreadItem[] {
       );
       if (message.callId === open.callId || joinsByRun) {
         open.messages.push(message);
+        if (isCallMarker(message)) {
+          open.marker = message;
+          open = undefined;
+          continue;
+        }
         if (message.callId === open.callId && message.runId) openRunIds.add(message.runId);
         continue;
       }
@@ -39,9 +51,18 @@ export function groupVoiceChats(messages: ThreadMessage[]): ThreadItem[] {
   return items;
 }
 
-/** First sentence of the call's first spoken reply, for the collapsed card. */
+function isCallMarker(message: ThreadMessage): boolean {
+  return message.role === "bot" && message.blocks[0]?.kind === "voice_call";
+}
+
+/** The title the bot hung up with, else the first sentence of its first spoken reply. */
 export function voiceChatSummary(group: VoiceChatGroup): string {
-  const reply = group.messages.find((message) => message.role === "bot");
+  const marker = group.marker?.blocks[0];
+  const title = marker?.kind === "voice_call" ? marker.title.trim() : "";
+  if (title) return title;
+  const reply = group.messages.find(
+    (message) => message.role === "bot" && message !== group.marker,
+  );
   const spoken = reply ? speechFromBlocks(reply.blocks).trim() : "";
   if (!spoken) return "";
   const end = spoken.search(/[.!?](\s|$)/u);
