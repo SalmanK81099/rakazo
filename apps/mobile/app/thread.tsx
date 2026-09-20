@@ -76,6 +76,7 @@ import {
   type MarkdownArtifactPreviewTarget,
 } from "../components/markdown-artifact-preview";
 import { NativeSymbol } from "../components/native-symbol";
+import { WorkingIndicator } from "../components/WorkingIndicator";
 import {
   applyMobileThreadEvent,
   blockText,
@@ -1599,6 +1600,7 @@ function Thread() {
         style={{
           flexDirection: "row",
           alignItems: "center",
+          gap: 8,
           minHeight: 40,
           marginTop: 12,
         }}
@@ -1609,6 +1611,7 @@ function Thread() {
           size={28}
           status={currentBotStatus}
         />
+        <WorkingIndicator />
       </View>
     ) : inGroup && workingGroupBots.length > 0 ? (
       <View
@@ -1638,6 +1641,7 @@ function Thread() {
             </View>
           ))}
         </View>
+        <WorkingIndicator />
       </View>
     ) : null;
 
