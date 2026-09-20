@@ -377,6 +377,7 @@ export function ShellPage() {
   const [replyTarget, setReplyTarget] = useState<ThreadMessage | null>(null);
   const [replyQuote, setReplyQuote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1999,6 +2000,7 @@ export function ShellPage() {
         if (permissionRequest) void permissionRequest.then(flushPendingBrowserNotifications);
       }
       const trimmed = plan.trimmed;
+      sendingRef.current = true;
       setSending(true);
       setSendError(null);
       const dropDelayedSetup = () => {
@@ -2112,6 +2114,7 @@ export function ShellPage() {
           setSendError(error instanceof Error ? error.message : t`Failed to send message`);
         }
       } finally {
+        sendingRef.current = false;
         setSending(false);
       }
     },
@@ -2128,6 +2131,7 @@ export function ShellPage() {
   );
   const stopRun = useCallback(async () => {
     if (sending) return;
+    sendingRef.current = true;
     setSending(true);
     try {
       const botTarget = activeBotId.current;
@@ -2175,6 +2179,7 @@ export function ShellPage() {
       }
       await refreshThreadRef.current(botTarget).catch(() => undefined);
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   }, [sending, t]);
@@ -2300,6 +2305,7 @@ export function ShellPage() {
     void scheduleFocusPrompt({
       immediate: isFirstBot,
       signal: controller.signal,
+      shouldSkip: () => sendingRef.current,
       prompt: async () => {
         if (focusPromptBotIdRef.current !== bot.id || activeBotId.current !== bot.id) return;
         await rpc.onboarding.promptFocus({ botId: bot.id }).catch(() => undefined);
