@@ -1,6 +1,6 @@
 import { useLingui } from "@lingui/react/macro";
 import { speechFromBlocks } from "@rakazo/core";
-import { cn } from "@rakazo/ui-web";
+import { buttonVariants, cn } from "@rakazo/ui-web";
 import { AudioLines, ChevronDown } from "lucide-react";
 import { useState } from "react";
 import {
@@ -20,31 +20,36 @@ export function VoiceChatCard({ group }: { group: VoiceChatGroup }) {
   return (
     <div
       data-testid="voice-chat-card"
-      className="w-full rounded-2xl border border-border bg-card px-3.5 py-3"
+      className="w-full max-w-[min(74%,calc(100%_-_6rem))] self-start rounded-[20px] border border-border bg-card"
     >
-      <div className="flex items-center gap-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((wasOpen) => !wasOpen)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-start"
+      >
         <AudioLines className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="text-[14px] font-medium text-foreground">{t`Voice chat`}</span>
-        <span className="text-[13px] tabular-nums text-muted-foreground">
+        <span className="text-sm font-medium text-foreground">{t`Voice chat`}</span>
+        <span className="text-xs tabular-nums text-muted-foreground">
           {clock(voiceChatDuration(group))}
         </span>
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-label={open ? t`Hide transcript` : t`Show transcript`}
-          onClick={() => setOpen((wasOpen) => !wasOpen)}
-          className="ms-auto grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+        <span
+          className={cn(
+            buttonVariants({ variant: "ghost", size: "icon-sm" }),
+            "ms-auto pointer-events-none text-muted-foreground",
+          )}
         >
+          <span className="sr-only">{open ? t`Hide transcript` : t`Show transcript`}</span>
           <ChevronDown className={cn("size-4 transition-transform", open && "rotate-180")} />
-        </button>
-      </div>
+        </span>
+      </button>
       {!open && summary ? (
-        <p className="mt-1.5 truncate text-[13px] text-muted-foreground" dir="auto">
+        <p className="truncate px-3 pb-2 text-sm text-muted-foreground" dir="auto">
           {summary}
         </p>
       ) : null}
       {open ? (
-        <div className="mt-2.5 flex flex-col gap-1.5">
+        <div className="space-y-1.5 px-3 pb-3 text-sm">
           {group.messages.map((message) => {
             const text = speechFromBlocks(message.blocks).trim();
             if (!text) return null;
@@ -53,10 +58,9 @@ export function VoiceChatCard({ group }: { group: VoiceChatGroup }) {
                 key={message.id}
                 dir="auto"
                 className={cn(
-                  "text-[13.5px] leading-[1.5]",
                   message.role === "user"
-                    ? "self-end text-end text-muted-foreground"
-                    : "self-start rounded-xl bg-muted px-3 py-1.5 text-foreground",
+                    ? "text-end text-muted-foreground"
+                    : "rounded-md bg-muted/60 px-3 py-2 text-foreground",
                 )}
               >
                 {text}
