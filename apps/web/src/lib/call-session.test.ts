@@ -414,6 +414,71 @@ describe("call session", () => {
       { kind: "voiceChat", callId, messages: live?.messages },
     ]);
   });
+
+  it("keeps quiet while the reply is still streaming, then speaks it whole", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+    getThread.mockResolvedValue(snapshot([streamingMessage("Hey,")], runningRun) as never);
+    await heard("are you there");
+    expect(speak).not.toHaveBeenCalled();
+
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Hey, I'm here.")]) as never);
+    await feed?.refresh();
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak).toHaveBeenCalledWith(
+      "Hey, I'm here.",
+      expect.objectContaining({ messageId: "message-1" }),
+    );
+  });
+
+  it("speaks the reply that lands after tool narration reopened the mic", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+    getThread.mockResolvedValue(snapshot([subagentMessage()], runningRun) as never);
+    await heard("what do you know about Anemoia");
+    expect(speak).toHaveBeenCalledWith("starting a subagent", expect.anything());
+
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "speaking", caption: "starting a subagent" });
+    speech?.({ status: "idle" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
+    expect(getSnapshot()?.phase).toBe("listening");
+
+    speak.mockClear();
+    getThread.mockResolvedValue(
+      snapshot([subagentMessage(), botMessage("message-1", "I know you run Anemoia")]) as never,
+    );
+    await feed?.refresh();
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak).toHaveBeenCalledWith(
+      "I know you run Anemoia",
+      expect.objectContaining({ messageId: "message-1" }),
+    );
+
+    await feed?.refresh();
+    expect(speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("speaks only the final reply when a mid-turn progress message came first", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+    getThread.mockResolvedValue(snapshot([botMessage("progress-1", "Hey,")], runningRun) as never);
+    await heard("are you there");
+    expect(speak).not.toHaveBeenCalled();
+
+    getThread.mockResolvedValue(
+      snapshot([
+        botMessage("progress-1", "Hey,"),
+        botMessage("message-1", "Hey, I'm here."),
+      ]) as never,
+    );
+    await feed?.refresh();
+    expect(speak).toHaveBeenCalledTimes(1);
+    expect(speak).toHaveBeenCalledWith(
+      "Hey, I'm here.",
+      expect.objectContaining({ messageId: "message-1" }),
+    );
+  });
 });
 
 /** Drives a call to the point where the bot's reply is playing and the mic is open. */
@@ -440,6 +505,33 @@ function botMessage(id: string, text: string): ThreadMessage {
     role: "bot",
     runId: "run-1",
     blocks: [{ kind: "text", text }],
+    createdAt: "2026-09-20T00:00:00.000Z",
+  };
+}
+
+/** The live message the thread streams the reply into while the run is still going. */
+function streamingMessage(text: string): ThreadMessage {
+  return {
+    id: "progress:run-1",
+    threadId: "thread-1",
+    seq: 4,
+    role: "bot",
+    runId: "run-1",
+    blocks: [{ kind: "progress", text }],
+    createdAt: "2026-09-20T00:00:00.000Z",
+  };
+}
+
+function subagentMessage(): ThreadMessage {
+  return {
+    id: "subagent:agent-1",
+    threadId: "thread-1",
+    seq: 4,
+    role: "bot",
+    runId: "run-1",
+    blocks: [
+      { kind: "subagent", agentId: "agent-1", name: "helper", task: "dig", status: "running" },
+    ],
     createdAt: "2026-09-20T00:00:00.000Z",
   };
 }

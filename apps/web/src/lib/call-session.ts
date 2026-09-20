@@ -64,6 +64,8 @@ let guardTimer: ReturnType<typeof setTimeout> | null = null;
 let micOpen = false;
 /** The caller cut the reply off: there is no tail left to wait out before listening. */
 let bargedIn = false;
+/** A turn is in flight: its reply is spoken even if narration reopened the mic meanwhile. */
+let awaitingReply = false;
 const narrated = new Set<string>();
 const watchers = new Set<() => void>();
 
@@ -104,6 +106,7 @@ export function startCall(call: {
   spokenMemory.clear();
   micOpen = false;
   bargedIn = false;
+  awaitingReply = false;
   state = {
     botId: call.botId,
     botName: call.botName,
@@ -151,6 +154,7 @@ export function endCall(): void {
   guardTimer = null;
   micOpen = false;
   bargedIn = false;
+  awaitingReply = false;
   unsubSpeech?.();
   unsubDictation?.();
   unsubSpeech = null;
@@ -298,6 +302,7 @@ async function handleTranscript(text: string) {
   // Captured now: a call started while this is in flight must not re-attach the new feed.
   const callFeed = feed;
   const closing = isFarewell(text);
+  awaitingReply = true;
   set({ heard: text, phase: "thinking", exchanges: [...exchanges, { role: "user", text }] });
   if (closing) {
     hangUpAfterReply = true;
@@ -322,6 +327,7 @@ async function handleTranscript(text: string) {
     commit(await rpc.threads.get({ botId }, { signal: callFeed?.signal }));
   } catch (error) {
     if (state?.botId !== botId) return;
+    awaitingReply = false;
     set({ caption: errorText(error, t`Could not send that`) });
     void listen();
   }
@@ -349,7 +355,9 @@ function reactToThread() {
     micOpen = false;
     set({ heard: "" });
   }
-  if (state.phase === "listening") return;
+  // Tool narration sends the call back to listening mid-turn; the reply it is still
+  // waiting for must not be dropped for arriving after that.
+  if (state.phase === "listening" && !awaitingReply) return;
   const { botId } = state;
   const messages = thread?.messages ?? [];
   const lastBot = [...messages].reverse().find((message) => message.role === "bot");
@@ -360,6 +368,7 @@ function reactToThread() {
     if (text) {
       // Never spoken again, interrupted or not.
       spokenMessageIds.add(lastBot.id);
+      awaitingReply = false;
       set({ exchanges: [...state.exchanges, { role: "bot", text }], heard: "" });
       spokenMemory.remember(text);
       void speaker.speak(
@@ -374,6 +383,7 @@ function reactToThread() {
     }
     if (!runActive(thread)) {
       spokenMessageIds.add(lastBot.id);
+      awaitingReply = false;
       void listen();
       return;
     }
@@ -386,6 +396,9 @@ function reactToThread() {
   for (const message of messages) {
     for (const block of message.blocks) {
       if (block.kind !== "progress" && block.kind !== "subagent") continue;
+      // A progress block without `activity` is the reply streaming in: speaking it here
+      // says the first sentence twice, once now and once when the run finishes.
+      if (block.kind === "progress" && block.activity !== true) continue;
       const key = `${message.id}:${block.kind}:${block.kind === "subagent" ? block.status : block.text}`;
       if (narrated.has(key)) continue;
       const phrase =
