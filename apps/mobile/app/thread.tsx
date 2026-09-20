@@ -1695,7 +1695,9 @@ function Thread() {
             data={liveItems}
             inverted
             keyExtractor={(item) =>
-              item.kind === "voiceChat" ? `call:${item.callId}` : item.message.id
+              item.kind === "voiceChat"
+                ? `call:${item.callId}:${item.messages[0]?.id}`
+                : item.message.id
             }
             extraData={answerableAskMessageId}
             style={{ flex: 1, marginTop: 8 }}

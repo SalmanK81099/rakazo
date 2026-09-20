@@ -1,10 +1,10 @@
 import { useEffect } from "react";
 import { View } from "react-native";
+import type { SharedValue } from "react-native-reanimated";
 import Animated, {
   cancelAnimation,
   Easing,
   interpolate,
-  type SharedValue,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,

@@ -30,7 +30,7 @@ export function CallCard({ onSettings }: { onSettings: () => void }) {
   const onBotScreen = botId === call.botId;
   return (
     <div
-      data-testid="call-card"
+      data-testid="call-view"
       className="fixed end-4 top-4 z-50 w-[360px] rounded-2xl border border-border bg-card p-3 shadow-lg"
     >
       <div className="flex items-center gap-2.5">

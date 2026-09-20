@@ -1934,7 +1934,7 @@ msgstr "비밀번호 숨기기"
 
 #: src/components/call/VoiceChatCard.tsx:42
 msgid "Hide transcript"
-msgstr ""
+msgstr "대화 기록 숨기기"
 
 #: src/pages/ModelSettingsOverlay.tsx:568
 #: src/pages/Onboarding.tsx:506
@@ -2376,7 +2376,7 @@ msgstr "섹션으로 이동"
 
 #: src/components/call/CallCard.tsx:98
 msgid "Mute"
-msgstr ""
+msgstr "음소거"
 
 #: src/components/teach/SkillDraftCard.tsx:79
 #: src/pages/Auth.tsx:134
@@ -2598,7 +2598,7 @@ msgstr ""
 #. placeholder {0}: call.botName
 #: src/components/call/CallCard.tsx:40
 msgid "On a call with {0}"
-msgstr ""
+msgstr "{0}님과 통화 중"
 
 #: src/pages/RoutineEditor.tsx:424
 msgid "On a schedule"
@@ -3321,7 +3321,7 @@ msgstr "설정 보기"
 
 #: src/components/call/VoiceChatCard.tsx:42
 msgid "Show transcript"
-msgstr ""
+msgstr "대화 기록 표시"
 
 #: src/lib/localized-provider-hint.ts:7
 #: src/pages/Auth.tsx:230
@@ -3608,7 +3608,7 @@ msgstr ""
 
 #: src/components/call/CallCard.tsx:88
 msgid "Transcript"
-msgstr ""
+msgstr "대화 기록"
 
 #: src/pages/ExternalConversationSettings.tsx:61
 msgid "Treat like a person"
@@ -3644,7 +3644,7 @@ msgstr "연결 해제"
 
 #: src/components/call/CallCard.tsx:98
 msgid "Unmute"
-msgstr ""
+msgstr "음소거 해제"
 
 #: src/pages/BotContextMenu.tsx:91
 msgid "Unpin"
@@ -3757,7 +3757,7 @@ msgstr "음성"
 
 #: src/components/call/VoiceChatCard.tsx:32
 msgid "Voice chat"
-msgstr ""
+msgstr "음성 대화"
 
 #: src/pages/ModelSettingsOverlay.tsx:692
 #: src/pages/ModelSettingsOverlay.tsx:714

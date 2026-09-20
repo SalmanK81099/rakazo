@@ -4,14 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import { useReducedMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { type MobileMe, rpc } from "../lib/api";
-import {
-  type CallPhase,
-  endCall,
-  toggleMute,
-  toggleTranscript,
-  useCallSession,
-} from "../lib/call-session";
+import type { MobileMe } from "../lib/api";
+import { rpc } from "../lib/api";
+import type { CallPhase } from "../lib/call-session";
+import { endCall, toggleMute, toggleTranscript, useCallSession } from "../lib/call-session";
 import { useI18n } from "../lib/i18n";
 import { useMobileTokens } from "../lib/native";
 import { BotAvatar } from "./bot-avatar";
