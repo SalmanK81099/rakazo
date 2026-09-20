@@ -83,7 +83,15 @@ import {
   verifyMcpInstall,
 } from "@rakazo/adapters";
 import type { Auth } from "@rakazo/auth";
-import type { Actor, Bot, ComputerStatus, McpServer, Me, SpaceNavigation } from "@rakazo/contracts";
+import type {
+  Actor,
+  Bot,
+  ComputerStatus,
+  McpServer,
+  Me,
+  MessageBlock,
+  SpaceNavigation,
+} from "@rakazo/contracts";
 import {
   appContract,
   IntegrationProviderIdSchema,
@@ -93,6 +101,7 @@ import {
 import {
   ACTIVE_RUN_STATUSES,
   AttachmentValidationError,
+  callClientNonce,
   containsSecret,
   expandSkillReferencesInPrompt,
   hasMixedOneShotSchedule,
@@ -492,6 +501,16 @@ export interface RouterDeps {
  * ignore the request abort signal, so without a deadline a hung destroy would
  * keep the deletion claim renewed forever and block stale-claim recovery. */
 const SPACE_TEARDOWN_TIMEOUT_MS = 120_000;
+
+/** The card is closed by a marker; the run that follows finishes whatever the call left open. */
+const HANG_UP_PROMPT =
+  "The voice call just ended because the user hung up. First call end_call with a short title for the call (leave farewell empty). Then, if anything the user asked for during the call is still unfinished, complete it now as a normal chat reply with full formatting. If nothing is pending, reply with one short sentence.";
+
+export function hasVoiceCallMarker(blocks: unknown, callId: string): boolean {
+  return (Array.isArray(blocks) ? (blocks as MessageBlock[]) : []).some(
+    (block) => block.kind === "voice_call" && block.callId === callId,
+  );
+}
 
 function spaceTeardownTimeoutMs(): number {
   const override = Number(process.env.SPACE_TEARDOWN_TIMEOUT_MS ?? "");
@@ -1708,6 +1727,88 @@ export function createRouter(deps: RouterDeps) {
             });
           }
         }
+        return { ok: true as const };
+      }),
+      endCall: authed.threads.endCall.handler(async ({ context, input }) => {
+        const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        if (target.kind !== "bot") throw new IsolationError();
+        await assertTeachingSendAllowed(deps.prisma, context.actor.spaceId, target.botId);
+        const { botId, threadId } = target;
+        const blocks = [
+          { kind: "voice_call" as const, callId: input.callId, title: "", farewell: "" },
+        ];
+        const committed = await deps.prisma.$transaction(async (tx) => {
+          // ponytail: newest 50 bot messages — a marker for a live call is always at the tail.
+          const recent = await tx.message.findMany({
+            where: { threadId, role: "bot" },
+            orderBy: { seq: "desc" },
+            take: 50,
+            select: { blocks: true },
+          });
+          if (recent.some((message) => hasVoiceCallMarker(message.blocks, input.callId))) {
+            return null;
+          }
+          const message = await createThreadMessageInTransaction(tx, {
+            threadId,
+            role: "bot",
+            botId,
+            blocks,
+          });
+          await appendEventInTransaction(tx, {
+            spaceId: context.actor.spaceId,
+            threadId,
+            botId,
+            type: "thread.message.created",
+            payload: { messageId: message.id, role: "bot", blocks },
+          });
+          const task = await tx.task.create({
+            data: {
+              spaceId: context.actor.spaceId,
+              botId,
+              threadId,
+              userId: context.actor.userId,
+              prompt: HANG_UP_PROMPT,
+              status: "queued",
+            },
+          });
+          const run = await tx.run.create({
+            data: {
+              spaceId: context.actor.spaceId,
+              botId,
+              threadId,
+              taskId: task.id,
+              userId: context.actor.userId,
+              status: "queued",
+              trigger: "call_end",
+              clientNonce: callClientNonce(input.callId),
+            },
+            select: { id: true },
+          });
+          const ended = await appendEventInTransaction(tx, {
+            spaceId: context.actor.spaceId,
+            threadId,
+            botId,
+            type: "thread.call.ended",
+            runId: run.id,
+            payload: {
+              botId,
+              threadId,
+              callId: input.callId,
+              title: "",
+              farewell: "",
+              messageId: message.id,
+            },
+          });
+          return { runId: run.id, eventSeq: ended.seq };
+        });
+        if (!committed) return { ok: true as const };
+        await deps.events.notify(threadId, committed.eventSeq).catch((error) => {
+          getLogger().error("call end realtime notification", error);
+        });
+        // The queued run is durable; a missed wake is repaired by the reconciler.
+        await deps.jobs.enqueue(runContinueJob(committed.runId)).catch((error) => {
+          getLogger().error("call end enqueue", error);
+        });
         return { ok: true as const };
       }),
       answer: authed.threads.answer.handler(async ({ context, input }) => {

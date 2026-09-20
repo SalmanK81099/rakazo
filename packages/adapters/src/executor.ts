@@ -1566,7 +1566,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 })
               )?.clientNonce ?? null)
             : null;
-        const voiceCall = isCallClientNonce(sourceClientNonce);
+        // A hang-up run has no source message: its own nonce carries the call it closes.
+        const callEndRun = run.trigger === "call_end";
+        const callClientNonceForRun = callEndRun ? run.clientNonce : sourceClientNonce;
+        const voiceCall = callEndRun || isCallClientNonce(sourceClientNonce);
         const graphicalToolsAllowed = graphical && acceptsImages && !heldForTakeover;
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
@@ -3058,16 +3061,55 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           }
           if (name === "end_call") {
-            const callId = callIdFromClientNonce(sourceClientNonce);
+            const callId = callIdFromClientNonce(callClientNonceForRun);
             const title = String(args.title ?? "")
               .trim()
               .slice(0, 40);
             const farewell = String(args.farewell ?? "")
               .trim()
               .slice(0, 160);
-            const marker = await publishMessage(deps, run, "bot", [
-              { kind: "voice_call", ...(callId ? { callId } : {}), title, farewell },
-            ]);
+            // The client may have hung up first and already closed the card: title that
+            // marker instead of leaving a second one behind.
+            // ponytail: newest 50 messages — a live call's marker is always at the thread tail.
+            const recent = callId
+              ? await deps.prisma.message.findMany({
+                  where: { threadId: thread.id, role: "bot" },
+                  orderBy: { seq: "desc" },
+                  take: 50,
+                  select: { id: true, blocks: true },
+                })
+              : [];
+            const existing = recent.find((message) =>
+              (Array.isArray(message.blocks) ? (message.blocks as MessageBlock[]) : []).some(
+                (block) => block.kind === "voice_call" && block.callId === callId,
+              ),
+            );
+            let markerId: string;
+            if (existing) {
+              const blocks = (existing.blocks as MessageBlock[]).map((block) =>
+                block.kind === "voice_call" && block.callId === callId
+                  ? { ...block, title, ...(farewell ? { farewell } : {}) }
+                  : block,
+              );
+              await deps.prisma.message.update({
+                where: { id: existing.id },
+                data: { blocks: blocks as Prisma.InputJsonValue },
+              });
+              await deps.events.append({
+                spaceId: run.spaceId,
+                threadId: thread.id,
+                botId: bot.id,
+                runId: run.id,
+                type: "thread.message.updated",
+                payload: { messageId: existing.id, role: "bot", blocks },
+              });
+              markerId = existing.id;
+            } else {
+              const marker = await publishMessage(deps, run, "bot", [
+                { kind: "voice_call", ...(callId ? { callId } : {}), title, farewell },
+              ]);
+              markerId = marker.id;
+            }
             await deps.events.append({
               spaceId: run.spaceId,
               threadId: thread.id,
@@ -3081,11 +3123,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 callId,
                 title,
                 farewell,
-                messageId: marker.id,
+                messageId: markerId,
               },
             });
             return finish({
-              ok: "Call ended and your farewell was spoken. The user is now reading, not listening: finish any remaining work as a normal chat reply with full formatting.",
+              ok: callEndRun
+                ? "The call is already closed and now carries your title. The user is reading, not listening: finish any remaining work as a normal chat reply with full formatting."
+                : "Call ended and your farewell was spoken. The user is now reading, not listening: finish any remaining work as a normal chat reply with full formatting.",
             });
           }
           if (name === "list_secrets") return listBotSecrets(deps.prisma, run);
@@ -3691,7 +3735,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           basePrompt,
           takeoverResume?.promptNote,
           approvalContinuation,
-          voiceCall ? VOICE_CALL_INSTRUCTION : undefined,
+          // A hang-up turn is read, not heard: no spoken-reply constraint.
+          voiceCall && !callEndRun ? VOICE_CALL_INSTRUCTION : undefined,
           // Per-turn, not in the system prompt: the timestamp changes every call and would break the cacheable prefix.
           formatCurrentTimeInstruction(),
         ]

@@ -334,6 +334,19 @@ export const appContract = {
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
+    /** The client hung up: close the call card and let the bot finish what was asked on it. */
+    endCall: oc
+      // ":" separates the call id from the nonce suffix, so it can never appear inside one.
+      .input(
+        botId.safeExtend({
+          callId: z
+            .string()
+            .min(1)
+            .max(200)
+            .regex(/^[^:]+$/),
+        }),
+      )
+      .output(z.object({ ok: z.literal(true) })),
     clear: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
     answer: oc
       .input(
