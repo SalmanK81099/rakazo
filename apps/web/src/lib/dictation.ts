@@ -24,6 +24,12 @@ interface SpeechRecognitionLike {
 }
 
 const IDLE: DictationSnapshot = { status: "idle", transcript: "" };
+/**
+ * Quiet gap that ends an utterance, measured on the page. Chrome's own end-of-speech
+ * fires on any pause, which cuts a caller off mid-sentence; a natural breath is well
+ * under this, a finished turn is well over it.
+ */
+const ENDPOINT_SILENCE_MS = 1200;
 const ENDPOINT_TICK_MS = 80;
 const SILENCE_RMS = 0.035;
 export const TRANSCRIPTION_RESPONSE_TIMEOUT_MS = 70_000;
@@ -127,11 +133,11 @@ export class Dictation {
     this.onFinal = opts.onFinal;
     this.set({ status: "listening", transcript: "" });
     if (webSpeechAvailable()) {
-      this.listenWebSpeech(opts.mode, opts.endpointMs ?? 850, mine);
+      this.listenWebSpeech(opts.mode, opts.endpointMs ?? ENDPOINT_SILENCE_MS, mine);
       return;
     }
     if (opts.transcribe) {
-      await this.listenRecorder(mine, opts.mode, opts.endpointMs ?? 850, spaceId);
+      await this.listenRecorder(mine, opts.mode, opts.endpointMs ?? ENDPOINT_SILENCE_MS, spaceId);
       return;
     }
     this.set({
@@ -148,19 +154,26 @@ export class Dictation {
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = navigator.language || "en-US";
+    // Chrome numbers results per session, so a restart starts over: keep the earlier text.
+    let carried = "";
+    let settled = "";
     rec.onresult = (event) => {
       if (this.token !== mine) return;
-      let transcript = "";
+      let session = "";
       for (let i = 0; i < event.results.length; i += 1) {
-        transcript += event.results[i]?.[0]?.transcript ?? "";
+        session += event.results[i]?.[0]?.transcript ?? "";
       }
-      this.set({ status: "listening", transcript: transcript.trim() });
+      const transcript = `${carried} ${session}`.trim();
+      this.set({ status: "listening", transcript });
       if (mode !== "endpoint") return;
+      // Only new words restart the window: a result that repeats what we already
+      // have is Chrome re-reporting, not the caller still talking.
+      if (transcript === settled) return;
+      settled = transcript;
       clearTimeout(this.silenceTimer);
       this.silenceTimer = setTimeout(() => {
         if (this.token !== mine) return;
-        const text = this.snapshot.transcript.trim();
-        this.finish(text, mine);
+        this.finish(this.snapshot.transcript, mine);
       }, endpointMs);
     };
     rec.onerror = (event) => {
@@ -178,11 +191,10 @@ export class Dictation {
         this.finish(this.snapshot.transcript, mine);
         return;
       }
-      const text = this.snapshot.transcript.trim();
-      if (text) {
-        this.finish(text, mine);
-        return;
-      }
+      // Chrome ends the session on its own — after a pause, or its ~60s cap — and that
+      // says nothing about whether the caller finished. Only the silence window above
+      // ends an utterance; here we just pick the microphone back up.
+      carried = this.snapshot.transcript;
       try {
         rec.start();
       } catch {

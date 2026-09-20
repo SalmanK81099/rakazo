@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isEchoOfSpeech } from "./echo.js";
+import { isEchoOfSpeech, SpokenMemory } from "./echo.js";
 
 const SPOKEN = "I'm here and hearing you…";
 
@@ -32,5 +32,40 @@ describe("isEchoOfSpeech", () => {
 
   it("keeps everything when nothing was spoken", () => {
     expect(isEchoOfSpeech("I am here in", "")).toBe(false);
+  });
+});
+
+describe("SpokenMemory", () => {
+  it("catches an echo of a reply the bot has already spoken past", () => {
+    const memory = new SpokenMemory();
+    memory.remember(SPOKEN, 0);
+    memory.remember("Booked for Friday", 1_000);
+
+    expect(memory.isEcho("hey I am here and here", undefined, 2_000)).toBe(true);
+  });
+
+  it("catches a line the mic heard across two spoken sentences", () => {
+    const memory = new SpokenMemory();
+    memory.remember("Okay, give me a second", 0);
+    memory.remember("I am checking the deploy now", 500);
+
+    expect(memory.isEcho("a second I am checking", undefined, 1_000)).toBe(true);
+  });
+
+  it("forgets what was spoken more than the window ago", () => {
+    const memory = new SpokenMemory();
+    memory.remember(SPOKEN, 0);
+
+    expect(memory.isEcho("hey I am here and here", undefined, 14_000)).toBe(true);
+    expect(memory.isEcho("hey I am here and here", undefined, 16_000)).toBe(false);
+  });
+
+  it("keeps a genuine turn, and everything once cleared", () => {
+    const memory = new SpokenMemory();
+    memory.remember(SPOKEN, 0);
+
+    expect(memory.isEcho("what should we do next", undefined, 100)).toBe(false);
+    memory.clear();
+    expect(memory.isEcho("hey I am here and here", undefined, 100)).toBe(false);
   });
 });

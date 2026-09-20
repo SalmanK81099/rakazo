@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Dictation,
   MAX_TRANSCRIPTION_RESPONSE_BYTES,
@@ -507,25 +507,78 @@ describe("Dictation recorder fallback", () => {
 });
 
 describe("Dictation web speech", () => {
-  it("restarts endpoint recognition after a quiet end", async () => {
-    const instances: FakeRecognition[] = [];
-    class FakeRecognition {
-      continuous = false;
-      interimResults = false;
-      lang = "";
-      onresult: ((event: unknown) => void) | null = null;
-      onerror: ((event: { error?: string }) => void) | null = null;
-      onend: (() => void) | null = null;
-      start = vi.fn();
-      stop = vi.fn();
-      abort = vi.fn();
-      constructor() {
-        instances.push(this);
-      }
+  class FakeRecognition {
+    continuous = false;
+    interimResults = false;
+    lang = "";
+    onresult: ((event: unknown) => void) | null = null;
+    onerror: ((event: { error?: string }) => void) | null = null;
+    onend: (() => void) | null = null;
+    start = vi.fn();
+    stop = vi.fn();
+    abort = vi.fn();
+    constructor() {
+      instances.push(this);
     }
+  }
+  let instances: FakeRecognition[] = [];
+
+  beforeEach(() => {
+    instances = [];
     vi.stubGlobal("window", { SpeechRecognition: FakeRecognition });
     vi.stubGlobal("navigator", { language: "en-US" });
+  });
 
+  /** One onresult carrying the whole session so far, the way Chrome reports it. */
+  function said(rec: FakeRecognition | undefined, ...parts: string[]) {
+    rec?.onresult?.({
+      resultIndex: 0,
+      results: parts.map((transcript) => [{ transcript }]),
+    });
+  }
+
+  it("rides out a pause in the middle of a sentence", async () => {
+    vi.useFakeTimers();
+    const onFinal = vi.fn();
+    const dictation = new Dictation();
+    await dictation.listen({ mode: "endpoint", onFinal });
+    const rec = instances[0];
+    expect(rec?.continuous).toBe(true);
+    expect(rec?.interimResults).toBe(true);
+
+    said(rec, "okay it is based on");
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(onFinal).not.toHaveBeenCalled();
+
+    said(rec, "okay it is based on", " the new project");
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(onFinal).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(onFinal).toHaveBeenCalledTimes(1);
+    expect(onFinal).toHaveBeenCalledWith("okay it is based on the new project");
+  });
+
+  it("never ends the turn because the browser ended the session", async () => {
+    vi.useFakeTimers();
+    const onFinal = vi.fn();
+    const dictation = new Dictation();
+    await dictation.listen({ mode: "endpoint", onFinal });
+    const rec = instances[0];
+
+    said(rec, "one of the new projects");
+    rec?.onend?.();
+    expect(onFinal).not.toHaveBeenCalled();
+    expect(rec?.start).toHaveBeenCalledTimes(2);
+
+    // The restarted session numbers its results from zero; the earlier words survive.
+    said(rec, "and the deadlines");
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(onFinal).toHaveBeenCalledTimes(1);
+    expect(onFinal).toHaveBeenCalledWith("one of the new projects and the deadlines");
+  });
+
+  it("restarts endpoint recognition after a quiet end", async () => {
     const dictation = new Dictation();
     await dictation.listen({ mode: "endpoint", onFinal: () => undefined });
     const rec = instances[0];

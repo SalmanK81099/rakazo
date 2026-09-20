@@ -1606,6 +1606,7 @@ export function createRouter(deps: RouterDeps) {
             blocks: [{ kind: "text", text: input.text }],
             prompt: input.text,
             trigger: "follow_up",
+            clientNonce: input.clientNonce,
           });
           if (sent.taskId && sent.runId) {
             await deps.jobs.enqueue(runContinueJob(sent.runId)).catch((error) => {
@@ -1631,6 +1632,7 @@ export function createRouter(deps: RouterDeps) {
             threadId: target.threadId,
             role: "user",
             blocks,
+            clientNonce: input.clientNonce,
           });
           const active = await tx.run.findFirst({
             where: {

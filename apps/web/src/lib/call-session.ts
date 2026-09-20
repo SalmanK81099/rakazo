@@ -11,7 +11,7 @@ import {
 } from "@rakazo/core";
 import { useSyncExternalStore } from "react";
 import { dictation } from "./dictation.js";
-import { isEchoOfSpeech } from "./echo.js";
+import { spokenMemory } from "./echo.js";
 import { rpc } from "./rpc.js";
 import { isThreadSnapshotEvent, reduceThreadSnapshot, rememberCallRun } from "./thread-events.js";
 import { speaker } from "./tts.js";
@@ -64,8 +64,6 @@ let guardTimer: ReturnType<typeof setTimeout> | null = null;
 let micOpen = false;
 /** The caller cut the reply off: there is no tail left to wait out before listening. */
 let bargedIn = false;
-/** What the speaker played last, so the same words coming back in can be dropped. */
-let lastSpoken = "";
 const narrated = new Set<string>();
 const watchers = new Set<() => void>();
 
@@ -103,7 +101,7 @@ export function startCall(call: {
   endCall();
   callId = randomId();
   transcribe = call.transcribe;
-  lastSpoken = "";
+  spokenMemory.clear();
   micOpen = false;
   bargedIn = false;
   state = {
@@ -162,6 +160,7 @@ export function endCall(): void {
   thread = null;
   spokenMessageIds.clear();
   narrated.clear();
+  spokenMemory.clear();
   if (!state) return;
   state = null;
   emit();
@@ -284,7 +283,7 @@ async function handleTranscript(text: string) {
   }
   dictation.stop("submit");
   // The microphone caught the reply, not the caller: drop it and keep listening.
-  if (isEchoOfSpeech(text, lastSpoken)) {
+  if (spokenMemory.isEcho(text)) {
     set({ heard: "" });
     void listen();
     return;
@@ -313,7 +312,7 @@ async function handleTranscript(text: string) {
         answer: spokenDecision(text) ?? text,
       });
     } else if (runActive(thread)) {
-      await rpc.threads.followUp({ botId, text });
+      await rpc.threads.followUp({ botId, text, clientNonce: callClientNonce(callId) });
     } else {
       const sent = await rpc.threads.send({ botId, clientNonce: callClientNonce(callId), text });
       // Live events omit the nonce, so tell the reducer which run carries this call.
@@ -333,7 +332,7 @@ async function handleTranscript(text: string) {
  * the reply leaking back into the mic: a real sentence, or a short interruption word.
  */
 function isBargeIn(text: string): boolean {
-  if (isEchoOfSpeech(text, lastSpoken, PLAYBACK_ECHO_RATIO)) return false;
+  if (spokenMemory.isEcho(text, PLAYBACK_ECHO_RATIO)) return false;
   const cleaned = text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]+/gu, " ")
@@ -362,7 +361,7 @@ function reactToThread() {
       // Never spoken again, interrupted or not.
       spokenMessageIds.add(lastBot.id);
       set({ exchanges: [...state.exchanges, { role: "bot", text }], heard: "" });
-      lastSpoken = text;
+      spokenMemory.remember(text);
       void speaker.speak(
         secretAsk
           ? `${text}. ${t`Hang up first, then enter the code on screen.`}`
@@ -400,8 +399,9 @@ function reactToThread() {
     }
   }
   if (phrases.length) {
-    lastSpoken = phrases.join(". ");
-    void speaker.speak(lastSpoken, { botId, messageId: `narrate:${lastKey}` });
+    const narration = phrases.join(". ");
+    spokenMemory.remember(narration);
+    void speaker.speak(narration, { botId, messageId: `narrate:${lastKey}` });
   }
 }
 

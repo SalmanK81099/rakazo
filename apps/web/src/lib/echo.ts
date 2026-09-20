@@ -53,3 +53,46 @@ export function isEchoOfSpeech(
   if (matched < MIN_ECHO_WORDS) return false;
   return matched / heardWords.length >= threshold;
 }
+
+/** How long a spoken line can still come back through the microphone. */
+const ECHO_MEMORY_MS = 15_000;
+/** More than one call's worth of turns inside the window; older ones are dropped. */
+const ECHO_MEMORY_MAX = 16;
+
+/**
+ * Every line the speaker played recently. Matching only against the last one misses
+ * the common case: by the time the microphone delivers an echo, a newer reply has
+ * already taken that slot.
+ */
+export class SpokenMemory {
+  private entries: { text: string; at: number }[] = [];
+
+  remember(text: string, now = Date.now()): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    this.entries.push({ text: trimmed, at: now });
+    this.prune(now);
+  }
+
+  clear(): void {
+    this.entries = [];
+  }
+
+  /**
+   * ponytail: one in-order match against the window's lines joined in order. That
+   * subsumes every consecutive run inside it, so a heard line spanning two replies
+   * matches without comparing each pair — at the cost of also matching words picked
+   * from lines further apart. Compare runs pairwise if that drops real turns.
+   */
+  isEcho(heard: string, threshold?: number, now = Date.now()): boolean {
+    this.prune(now);
+    return isEchoOfSpeech(heard, this.entries.map((entry) => entry.text).join(". "), threshold);
+  }
+
+  private prune(now: number): void {
+    const cutoff = now - ECHO_MEMORY_MS;
+    this.entries = this.entries.filter((entry) => entry.at >= cutoff).slice(-ECHO_MEMORY_MAX);
+  }
+}
+
+export const spokenMemory = new SpokenMemory();

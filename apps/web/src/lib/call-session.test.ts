@@ -52,6 +52,7 @@ const listen = vi.mocked(dictation.listen);
 const speak = vi.mocked(speaker.speak);
 const isSpeaking = vi.mocked(speaker.isSpeaking);
 const send = vi.mocked(rpc.threads.send);
+const followUp = vi.mocked(rpc.threads.followUp);
 const getThread = vi.mocked(rpc.threads.get);
 
 describe("call session", () => {
@@ -234,6 +235,48 @@ describe("call session", () => {
       text: "I'm here and hearing you",
     });
     expect(listen).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores the reply coming back after a newer one was spoken", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+    getThread.mockResolvedValue(
+      snapshot([botMessage("message-1", "I'm here and hearing you")]) as never,
+    );
+    await heard("book the flight");
+    getThread.mockResolvedValue(
+      snapshot([
+        botMessage("message-1", "I'm here and hearing you"),
+        botMessage("message-2", "Booked for Friday"),
+      ]) as never,
+    );
+    await feed?.refresh();
+    expect(speak).toHaveBeenCalledTimes(2);
+    send.mockClear();
+
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "idle" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
+    await heard("hey I am here and here");
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("keeps a turn taken mid-run in the call's card", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    getThread.mockResolvedValue(snapshot([], runningRun) as never);
+    await heard("book the flight");
+    await heard("window seat please");
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(followUp).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: "call-bot", text: "window seat please" }),
+    );
+    const sent = String(send.mock.calls[0]?.[0]?.clientNonce);
+    const followed = String(followUp.mock.calls[0]?.[0]?.clientNonce);
+    expect(followed.startsWith("call:")).toBe(true);
+    expect(callIdFromClientNonce(followed)).toBe(callIdFromClientNonce(sent));
+    expect(followed).not.toBe(sent);
   });
 
   it("stops listening while muted", async () => {
