@@ -578,6 +578,22 @@ describe("Dictation web speech", () => {
     expect(onFinal).toHaveBeenCalledWith("one of the new projects and the deadlines");
   });
 
+  it("publishes interim words to watchers long before the turn ends", async () => {
+    vi.useFakeTimers();
+    const onFinal = vi.fn();
+    const dictation = new Dictation();
+    const seen: string[] = [];
+    dictation.subscribe((snapshot) => seen.push(snapshot.transcript));
+    await dictation.listen({ mode: "endpoint", onFinal });
+
+    said(instances[0], "what about the deploy");
+    await vi.advanceTimersByTimeAsync(300);
+
+    // The only signal available while the caller is still talking.
+    expect(seen.at(-1)).toBe("what about the deploy");
+    expect(onFinal).not.toHaveBeenCalled();
+  });
+
   it("restarts endpoint recognition after a quiet end", async () => {
     const dictation = new Dictation();
     await dictation.listen({ mode: "endpoint", onFinal: () => undefined });

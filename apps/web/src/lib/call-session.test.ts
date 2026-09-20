@@ -1,7 +1,14 @@
 import type { ProductEvent, ThreadMessage, ThreadSnapshot } from "@rakazo/contracts";
 import { callIdFromClientNonce, runThreadSubscription } from "@rakazo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ECHO_GUARD_MS, endCall, getSnapshot, startCall, toggleMute } from "./call-session";
+import {
+  ECHO_GUARD_MS,
+  endCall,
+  getSnapshot,
+  INTERIM_BARGE_IN_MS,
+  startCall,
+  toggleMute,
+} from "./call-session";
 import { dictation } from "./dictation.js";
 import { rpc } from "./rpc.js";
 import { reduceThreadSnapshot } from "./thread-events.js";
@@ -434,20 +441,14 @@ describe("call session", () => {
     );
   });
 
-  it("speaks the reply that lands after tool narration reopened the mic", async () => {
+  it("never speaks tool activity on a call, and still speaks the reply", async () => {
     startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
     const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
     getThread.mockResolvedValue(snapshot([subagentMessage()], runningRun) as never);
     await heard("what do you know about Anemoia");
-    expect(speak).toHaveBeenCalledWith("starting a subagent", expect.anything());
+    expect(speak).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("thinking");
 
-    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
-    speech?.({ status: "speaking", caption: "starting a subagent" });
-    speech?.({ status: "idle" });
-    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
-    expect(getSnapshot()?.phase).toBe("listening");
-
-    speak.mockClear();
     getThread.mockResolvedValue(
       snapshot([subagentMessage(), botMessage("message-1", "I know you run Anemoia")]) as never,
     );
@@ -457,9 +458,68 @@ describe("call session", () => {
       "I know you run Anemoia",
       expect.objectContaining({ messageId: "message-1" }),
     );
+  });
 
-    await feed?.refresh();
-    expect(speak).toHaveBeenCalledTimes(1);
+  it("cuts the reply short on an interim heard over it, then sends the finished turn", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const speech = await speakingReply("Booked for Friday");
+    send.mockClear();
+    vi.mocked(speaker.stop).mockClear();
+
+    interim("what about the deploy");
+    await vi.advanceTimersByTimeAsync(INTERIM_BARGE_IN_MS - 1);
+    expect(speaker.stop).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(speaker.stop).toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("listening");
+
+    // The cut-off reply never resumes, and the session that is still open finishes the turn.
+    const sessions = listen.mock.calls.length;
+    speech?.({ status: "idle" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
+    expect(listen).toHaveBeenCalledTimes(sessions);
+
+    await heard("what about the deploy");
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "what about the deploy" }));
+  });
+
+  it("keeps playing when the interim is the reply leaking into the mic", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await speakingReply("I'm here and hearing you");
+    vi.mocked(speaker.stop).mockClear();
+
+    interim("I am here and hearing");
+    await vi.advanceTimersByTimeAsync(INTERIM_BARGE_IN_MS * 2);
+
+    expect(speaker.stop).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("speaking");
+  });
+
+  it("keeps playing when an interim phrase is revised back into an echo", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await speakingReply("I'm here and hearing you");
+    vi.mocked(speaker.stop).mockClear();
+
+    interim("I am");
+    await vi.advanceTimersByTimeAsync(INTERIM_BARGE_IN_MS - 100);
+    interim("I am here and hearing");
+    await vi.advanceTimersByTimeAsync(INTERIM_BARGE_IN_MS * 2);
+
+    expect(speaker.stop).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("speaking");
+  });
+
+  it("does not cut the reply for a single interim word", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await speakingReply("Booked for Friday");
+    vi.mocked(speaker.stop).mockClear();
+
+    interim("yeah");
+    await vi.advanceTimersByTimeAsync(INTERIM_BARGE_IN_MS * 2);
+
+    expect(speaker.stop).not.toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("speaking");
   });
 
   it("speaks only the final reply when a mid-turn progress message came first", async () => {
@@ -492,6 +552,12 @@ async function speakingReply(text: string) {
   speech?.({ status: "speaking", caption: text });
   await Promise.resolve();
   return speech;
+}
+
+/** One interim result from the open dictation session, the way the browser reports it. */
+function interim(transcript: string) {
+  const watcher = vi.mocked(dictation.subscribe).mock.calls.at(-1)?.[0];
+  watcher?.({ status: "listening", transcript });
 }
 
 async function heard(text: string) {

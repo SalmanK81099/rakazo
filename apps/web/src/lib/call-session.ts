@@ -4,7 +4,6 @@ import {
   callClientNonce,
   isFarewell,
   isSecretAskBlock,
-  narrateTool,
   runThreadSubscription,
   speechFromBlocks,
   spokenDecision,
@@ -45,6 +44,12 @@ export const ECHO_GUARD_MS = 600;
 const PLAYBACK_ECHO_RATIO = 0.4;
 /** The only one-word turns worth cutting a reply short for. */
 const INTERRUPT_WORDS = new Set(["stop", "wait", "hold on", "pause", "no"]);
+/**
+ * How long a phrase must stand mid-playback before it cuts the reply off. The silence
+ * window that ends an utterance is far longer than a reply, so waiting for the final
+ * transcript means the barge-in lands after the bot already finished talking.
+ */
+export const INTERIM_BARGE_IN_MS = 300;
 
 let state: CallState | null = null;
 /** Shared by every message this call sends, so the thread can group one call's exchange. */
@@ -64,9 +69,10 @@ let guardTimer: ReturnType<typeof setTimeout> | null = null;
 let micOpen = false;
 /** The caller cut the reply off: there is no tail left to wait out before listening. */
 let bargedIn = false;
-/** A turn is in flight: its reply is spoken even if narration reopened the mic meanwhile. */
+/** A turn is in flight: its reply must be spoken even if the mic reopened meanwhile. */
 let awaitingReply = false;
-const narrated = new Set<string>();
+/** Counting down an interim phrase heard over the reply, before it counts as cutting in. */
+let interimTimer: ReturnType<typeof setTimeout> | null = null;
 const watchers = new Set<() => void>();
 
 export function subscribe(watcher: () => void): () => void {
@@ -104,6 +110,7 @@ export function startCall(call: {
   callId = randomId();
   transcribe = call.transcribe;
   spokenMemory.clear();
+  clearInterim();
   micOpen = false;
   bargedIn = false;
   awaitingReply = false;
@@ -136,7 +143,8 @@ export function startCall(call: {
     if (!state) return;
     if (heard.status === "listening") {
       set({ heard: pendingSecretAsk(thread) ? "" : heard.transcript });
-    }
+      watchInterim(heard.transcript);
+    } else clearInterim();
     if (heard.error) set({ caption: heard.error });
   });
   watchThread(call.botId);
@@ -152,6 +160,7 @@ export function endCall(): void {
   hangUpTimer = null;
   if (guardTimer) clearTimeout(guardTimer);
   guardTimer = null;
+  clearInterim();
   micOpen = false;
   bargedIn = false;
   awaitingReply = false;
@@ -163,7 +172,6 @@ export function endCall(): void {
   speaker.stop();
   thread = null;
   spokenMessageIds.clear();
-  narrated.clear();
   spokenMemory.clear();
   if (!state) return;
   state = null;
@@ -337,15 +345,58 @@ async function handleTranscript(text: string) {
  */
 function isBargeIn(text: string): boolean {
   if (spokenMemory.isEcho(text, PLAYBACK_ECHO_RATIO)) return false;
-  const cleaned = text
+  const cleaned = cleanWords(text);
+  return cleaned.includes(" ") || INTERRUPT_WORDS.has(cleaned);
+}
+
+function cleanWords(text: string): string {
+  return text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
-  return cleaned.includes(" ") || INTERRUPT_WORDS.has(cleaned);
 }
 
-/** Speak whatever the call's bot said last, then narrate progress while it keeps working. */
+/**
+ * An interim is a guess Chrome revises word by word, so a single stray word is never
+ * enough: only a phrase that is not the reply leaking back cuts playback short.
+ */
+function isInterimBargeIn(text: string): boolean {
+  return cleanWords(text).includes(" ") && !spokenMemory.isEcho(text, PLAYBACK_ECHO_RATIO);
+}
+
+/**
+ * Interim results are the only signal that arrives while the caller is still talking.
+ * A qualifying phrase that stands for INTERIM_BARGE_IN_MS stops the audio at once; the
+ * dictation session keeps running, so its silence window finishes the utterance and
+ * handleTranscript sends it as the next turn.
+ */
+function watchInterim(text: string) {
+  if (state?.phase !== "speaking") return;
+  if (!isInterimBargeIn(text)) {
+    clearInterim();
+    return;
+  }
+  if (interimTimer) return;
+  interimTimer = setTimeout(() => {
+    interimTimer = null;
+    if (state?.phase !== "speaking") return;
+    // Never resume the cut-off message, and keep the idle it emits from reopening the mic.
+    bargedIn = true;
+    speaker.stop();
+    set({ phase: "listening", caption: "" });
+  }, INTERIM_BARGE_IN_MS);
+}
+
+function clearInterim() {
+  if (interimTimer) clearTimeout(interimTimer);
+  interimTimer = null;
+}
+
+/**
+ * Speak whatever the call's bot said last. A call never speaks tool activity: the
+ * card's phase indicator is the only feedback, so nothing talks over the caller.
+ */
 function reactToThread() {
   if (!state) return;
   if (pendingSecretAsk(thread)) {
@@ -353,8 +404,7 @@ function reactToThread() {
     micOpen = false;
     set({ heard: "" });
   }
-  // Tool narration sends the call back to listening mid-turn; the reply it is still
-  // waiting for must not be dropped for arriving after that.
+  // A turn sent back to listening mid-flight must not drop the reply it is waiting for.
   if (state.phase === "listening" && !awaitingReply) return;
   const { botId } = state;
   const messages = thread?.messages ?? [];
@@ -383,36 +433,7 @@ function reactToThread() {
       spokenMessageIds.add(lastBot.id);
       awaitingReply = false;
       void listen();
-      return;
     }
-  }
-  if (!runActive(thread)) return;
-  // Narration must not cut into a reply already playing; its keys stay unconsumed for later.
-  if (speaker.isSpeaking()) return;
-  const phrases: string[] = [];
-  let lastKey = "";
-  for (const message of messages) {
-    for (const block of message.blocks) {
-      if (block.kind !== "progress" && block.kind !== "subagent") continue;
-      // A progress block without `activity` is the reply streaming in: speaking it here
-      // says the first sentence twice, once now and once when the run finishes.
-      if (block.kind === "progress" && block.activity !== true) continue;
-      const key = `${message.id}:${block.kind}:${block.kind === "subagent" ? block.status : block.text}`;
-      if (narrated.has(key)) continue;
-      const phrase =
-        block.kind === "subagent"
-          ? narrateTool("run_subagent")
-          : (narrateTool(block.text.split(/\s+/)[0] ?? "") ?? speakableProgress(block.text));
-      if (!phrase) continue;
-      narrated.add(key);
-      phrases.push(phrase);
-      lastKey = key;
-    }
-  }
-  if (phrases.length) {
-    const narration = phrases.join(". ");
-    spokenMemory.remember(narration);
-    void speaker.speak(narration, { botId, messageId: `narrate:${lastKey}` });
   }
 }
 
@@ -451,12 +472,6 @@ function latestAskId(snapshot: ThreadSnapshot | null): string | null {
     }
   }
   return null;
-}
-
-function speakableProgress(text: string): string | null {
-  const trimmed = text.trim();
-  if (!trimmed || trimmed.length > 80) return null;
-  return trimmed;
 }
 
 function errorText(error: unknown, fallback: string) {
