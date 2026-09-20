@@ -33,6 +33,32 @@ describe("isEchoOfSpeech", () => {
   it("keeps everything when nothing was spoken", () => {
     expect(isEchoOfSpeech("I am here in", "")).toBe(false);
   });
+
+  const NEWSPAPER = "Happy to, but I'm not sure which newspaper you mean";
+
+  it("catches a 2-word echo that leads the spoken line", () => {
+    expect(isEchoOfSpeech("happy to", NEWSPAPER)).toBe(true);
+  });
+
+  it("catches a 2-word echo adjacent mid-line", () => {
+    expect(isEchoOfSpeech("tell me", "…just tell me the client…")).toBe(true);
+  });
+
+  it("catches a 2-word echo further in the line", () => {
+    expect(isEchoOfSpeech("new project", "…tell me which new project you meant…")).toBe(true);
+  });
+
+  it("drops a 2-word pair that isn't adjacent in the line", () => {
+    expect(isEchoOfSpeech("hello there", NEWSPAPER)).toBe(false);
+  });
+
+  it("keeps a single word, never an echo", () => {
+    expect(isEchoOfSpeech("yes", NEWSPAPER)).toBe(false);
+  });
+
+  it("drops a 2-word pair that only appears non-adjacently", () => {
+    expect(isEchoOfSpeech("happy sure", NEWSPAPER)).toBe(false);
+  });
 });
 
 describe("SpokenMemory", () => {

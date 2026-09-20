@@ -42,6 +42,11 @@ export function isEchoOfSpeech(
   const heardWords = words(heard);
   const spokenWords = words(spoken);
   if (heardWords.length > MAX_ECHO_WORDS || !spokenWords.length) return false;
+  if (heardWords.length === 2) {
+    return spokenWords.some(
+      (word, i) => word === heardWords[0] && spokenWords[i + 1] === heardWords[1],
+    );
+  }
   let cursor = 0;
   let matched = 0;
   for (const word of heardWords) {
