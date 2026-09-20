@@ -1262,21 +1262,15 @@ afterEach(() => {
   delete process.env.SANDBOX_MAX_COMPUTERS_PER_USER;
 });
 describe("threads.endCall", () => {
-  function fixture(existingMarkerCallId?: string) {
-    const created: { blocks?: unknown }[] = [];
+  function fixture(duplicateMarker?: boolean) {
+    const created: { blocks?: unknown; clientNonce?: string }[] = [];
     const events: { type: string; payload: Record<string, unknown> }[] = [];
     const tx = {
       thread: { update: vi.fn().mockResolvedValue({ nextMessageSeq: 3, nextEventSeq: 5 }) },
       message: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue(
-            existingMarkerCallId
-              ? [{ blocks: [{ kind: "voice_call", callId: existingMarkerCallId, title: "" }] }]
-              : [],
-          ),
-        create: vi.fn(async ({ data }: { data: { blocks: unknown } }) => {
-          created.push({ blocks: data.blocks });
+        create: vi.fn(async ({ data }: { data: { blocks: unknown; clientNonce?: string } }) => {
+          if (duplicateMarker) throw Object.assign(new Error("unique"), { code: "P2002" });
+          created.push({ blocks: data.blocks, clientNonce: data.clientNonce });
           return { id: "message-1" };
         }),
       },
@@ -1341,6 +1335,7 @@ describe("threads.endCall", () => {
     expect(created[0]?.blocks).toEqual([
       { kind: "voice_call", callId: "call-1", title: "", farewell: "" },
     ]);
+    expect(created[0]?.clientNonce).toBe("call:call-1:marker");
     expect(events.map((event) => event.type)).toEqual([
       "thread.message.created",
       "thread.call.ended",
@@ -1359,8 +1354,8 @@ describe("threads.endCall", () => {
     expect(enqueue).toHaveBeenCalledOnce();
   });
 
-  it("is a no-op when the call already has a marker", async () => {
-    const { call, created, events, tx, enqueue } = fixture("call-1");
+  it("is a no-op when a concurrent hang-up already wrote the marker", async () => {
+    const { call, created, events, tx, enqueue } = fixture(true);
     const { response } = await call();
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ json: { ok: true } });

@@ -45,6 +45,7 @@ import {
   applyJudgeDecision,
   assertTransition,
   botMessageAllowsSilence,
+  CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
   connectorKindFromToolName,
   containsSecret,
@@ -2984,12 +2985,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               serverRow = created.server;
               approvalEventSeq = created.eventSeq;
             } catch (error) {
-              if (
-                typeof error === "object" &&
-                error !== null &&
-                "code" in error &&
-                (error as { code?: string }).code === "P2002"
-              ) {
+              if (isUniqueViolation(error)) {
                 return finish({
                   error: `An MCP server named "${parsed.name}" already exists. Ask the user to remove it first or pick another name.`,
                 });
@@ -3069,63 +3065,79 @@ export function createRunExecutor(deps: ExecutorDeps) {
               .trim()
               .slice(0, 160);
             // The client may have hung up first and already closed the card: title that
-            // marker instead of leaving a second one behind.
-            // ponytail: newest 50 messages — a live call's marker is always at the thread tail.
-            const recent = callId
-              ? await deps.prisma.message.findMany({
-                  where: { threadId: thread.id, role: "bot" },
-                  orderBy: { seq: "desc" },
-                  take: 50,
-                  select: { id: true, blocks: true },
-                })
-              : [];
-            const existing = recent.find((message) =>
-              (Array.isArray(message.blocks) ? (message.blocks as MessageBlock[]) : []).some(
-                (block) => block.kind === "voice_call" && block.callId === callId,
-              ),
-            );
-            let markerId: string;
+            // marker instead of leaving a second one behind. The marker's deterministic
+            // nonce is the idempotency key, so a resumed run cannot double-publish.
+            const nonce = callId ? `${CALL_CLIENT_NONCE_PREFIX}${callId}:marker` : undefined;
+            const findMarker = async () =>
+              nonce
+                ? await deps.prisma.message.findUnique({
+                    where: { threadId_clientNonce: { threadId: thread.id, clientNonce: nonce } },
+                    select: { id: true, blocks: true },
+                  })
+                : null;
+            let existing = await findMarker();
+            let markerId = "";
+            let changed = true;
+            if (!existing) {
+              try {
+                const marker = await publishMessage(
+                  deps,
+                  run,
+                  "bot",
+                  [{ kind: "voice_call", ...(callId ? { callId } : {}), title, farewell }],
+                  undefined,
+                  nonce,
+                );
+                markerId = marker.id;
+              } catch (error) {
+                if (!isUniqueViolation(error)) throw error;
+                existing = await findMarker();
+              }
+            }
             if (existing) {
-              const blocks = (existing.blocks as MessageBlock[]).map((block) =>
+              const before = Array.isArray(existing.blocks)
+                ? (existing.blocks as MessageBlock[])
+                : [];
+              const blocks = before.map((block) =>
                 block.kind === "voice_call" && block.callId === callId
                   ? { ...block, title, ...(farewell ? { farewell } : {}) }
                   : block,
               );
-              await deps.prisma.message.update({
-                where: { id: existing.id },
-                data: { blocks: blocks as Prisma.InputJsonValue },
-              });
+              changed = JSON.stringify(blocks) !== JSON.stringify(before);
+              if (changed) {
+                await deps.prisma.message.update({
+                  where: { id: existing.id },
+                  data: { blocks: blocks as Prisma.InputJsonValue },
+                });
+                await deps.events.append({
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  runId: run.id,
+                  type: "thread.message.updated",
+                  payload: { messageId: existing.id, role: "bot", blocks },
+                });
+              }
+              markerId = existing.id;
+            }
+            if (changed) {
               await deps.events.append({
                 spaceId: run.spaceId,
                 threadId: thread.id,
                 botId: bot.id,
                 runId: run.id,
-                type: "thread.message.updated",
-                payload: { messageId: existing.id, role: "bot", blocks },
+                type: "thread.call.ended",
+                payload: {
+                  botId: bot.id,
+                  threadId: thread.id,
+                  runId: run.id,
+                  callId,
+                  title,
+                  farewell,
+                  messageId: markerId,
+                },
               });
-              markerId = existing.id;
-            } else {
-              const marker = await publishMessage(deps, run, "bot", [
-                { kind: "voice_call", ...(callId ? { callId } : {}), title, farewell },
-              ]);
-              markerId = marker.id;
             }
-            await deps.events.append({
-              spaceId: run.spaceId,
-              threadId: thread.id,
-              botId: bot.id,
-              runId: run.id,
-              type: "thread.call.ended",
-              payload: {
-                botId: bot.id,
-                threadId: thread.id,
-                runId: run.id,
-                callId,
-                title,
-                farewell,
-                messageId: markerId,
-              },
-            });
             return finish({
               ok: callEndRun
                 ? "The call is already closed and now carries your title. The user is reading, not listening: finish any remaining work as a normal chat reply with full formatting."
@@ -5036,6 +5048,10 @@ function redactBlocks(blocks: MessageBlock[], secrets: string[]): MessageBlock[]
     }
     return block;
   });
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
 }
 
 async function publishMessage(
