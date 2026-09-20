@@ -45,6 +45,7 @@ import {
   applyJudgeDecision,
   assertTransition,
   botMessageAllowsSilence,
+  callIdFromClientNonce,
   connectorKindFromToolName,
   containsSecret,
   createStreamingRedactor,
@@ -344,10 +345,11 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "browser_snapshot",
   "list_secrets",
   "cloud_agent_status",
+  "end_call",
 ]);
 /** Added to the turn prompt when the user spoke this message on a live voice call. */
 export const VOICE_CALL_INSTRUCTION =
-  "You are on a live voice call. Reply in one to three short spoken sentences. No markdown, lists, links, or option cards; do not use ask_user unless you truly cannot proceed. Answer directly from what you already know when you can; use tools or subagents only when the answer requires them.";
+  "You are on a live voice call. Reply in one to three short spoken sentences. No markdown, lists, links, or option cards; do not use ask_user unless you truly cannot proceed. Answer directly from what you already know when you can; use tools or subagents only when the answer requires them. If the user asks to end the call or hang up, call end_call and say goodbye in the same reply; do any remaining work after that in chat.";
 const MAX_MODEL_FILE_BYTES = 250_000;
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
@@ -1554,6 +1556,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ));
           }
         }
+        // Calls carry no schema flag: the sending client encodes them in the clientNonce.
+        const sourceClientNonce =
+          (run.trigger === "user" || run.trigger === "follow_up") && run.sourceMessageId
+            ? ((
+                await deps.prisma.message.findUnique({
+                  where: { id: run.sourceMessageId },
+                  select: { clientNonce: true },
+                })
+              )?.clientNonce ?? null)
+            : null;
+        const voiceCall = isCallClientNonce(sourceClientNonce);
         const graphicalToolsAllowed = graphical && acceptsImages && !heldForTakeover;
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
@@ -1566,6 +1579,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             semanticMemoryEnabled,
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
+            voiceCall,
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
           ...(hasMessagingIdentity ? agentConnectionTools : []),
@@ -3043,6 +3057,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ),
             );
           }
+          if (name === "end_call") {
+            await deps.events.append({
+              spaceId: run.spaceId,
+              threadId: thread.id,
+              botId: bot.id,
+              runId: run.id,
+              type: "thread.call.ended",
+              payload: {
+                botId: bot.id,
+                threadId: thread.id,
+                runId: run.id,
+                callId: callIdFromClientNonce(sourceClientNonce),
+              },
+            });
+            return finish({ ok: "Call ended." });
+          }
           if (name === "list_secrets") return listBotSecrets(deps.prisma, run);
           if (name === "forget_secret") {
             const parsed = BotSecretName.safeParse(args.name);
@@ -3641,18 +3671,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           { exposedToolNames: new Set(tools.map((tool) => tool.name)) },
         );
         const replyContext = await loadReplyContext(deps.prisma, thread.id, run.sourceMessageId);
-        // Calls carry no schema flag: the sending client encodes them in the clientNonce.
-        const voiceCall =
-          (run.trigger === "user" || run.trigger === "follow_up") && run.sourceMessageId
-            ? isCallClientNonce(
-                (
-                  await deps.prisma.message.findUnique({
-                    where: { id: run.sourceMessageId },
-                    select: { clientNonce: true },
-                  })
-                )?.clientNonce,
-              )
-            : false;
         const prompt = [
           replyContext,
           basePrompt,
@@ -4608,6 +4626,8 @@ export function selectBuiltinToolsForRun(options: {
   semanticMemoryEnabled: boolean;
   cloudAgentEnabled?: boolean;
   messagingChannelRun: boolean;
+  /** Hanging up is only offered to a turn the caller spoke on a live call. */
+  voiceCall?: boolean;
 }) {
   return selectCloudAgentTools(
     selectMemoryTools(
@@ -4626,11 +4646,12 @@ export function selectBuiltinToolsForRun(options: {
     Boolean(options.cloudAgentEnabled),
   ).filter(
     (tool) =>
-      !options.messagingChannelRun ||
-      (!["remember", "save_memory", "recall_memory", "forget_memory", "task_catalog"].includes(
-        tool.name,
-      ) &&
-        !tool.name.startsWith("scratchpad_")),
+      (options.voiceCall || tool.name !== "end_call") &&
+      (!options.messagingChannelRun ||
+        (!["remember", "save_memory", "recall_memory", "forget_memory", "task_catalog"].includes(
+          tool.name,
+        ) &&
+          !tool.name.startsWith("scratchpad_"))),
   );
 }
 

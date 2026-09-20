@@ -37,7 +37,11 @@ export type CallDeps = {
   transcribe: (clip: CallClip, signal: AbortSignal) => Promise<string>;
   send: (botId: string, text: string, clientNonce: string) => Promise<void>;
   speak: (botId: string, text: string) => Promise<void>;
-  watch: (botId: string, onReply: (messageId: string, text: string) => void) => () => void;
+  watch: (
+    botId: string,
+    onReply: (messageId: string, text: string) => void,
+    onCallEnded: (callId: string | undefined) => void,
+  ) => () => void;
 };
 
 /** How long a goodbye waits for a reply that may never come before hanging up anyway. */
@@ -107,7 +111,7 @@ export function startCall(
     heard: "",
     exchanges: [],
   };
-  unwatch = deps.watch(call.botId, onReply);
+  unwatch = deps.watch(call.botId, onReply, onCallEnded);
   emit();
   void listen();
 }
@@ -207,6 +211,13 @@ function onReply(messageId: string, text: string): void {
     });
 }
 
+/** The bot hung up mid-run: speak the reply it is finishing, then end the call. */
+function onCallEnded(endedCallId: string | undefined): void {
+  if (!state || endedCallId !== callId || hangUpAfterReply) return;
+  hangUpAfterReply = true;
+  hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT_MS);
+}
+
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
@@ -302,6 +313,7 @@ async function speakReply(botId: string, text: string): Promise<void> {
 function watchReplies(
   botId: string,
   onNewReply: (messageId: string, text: string) => void,
+  onEnded: (callId: string | undefined) => void,
 ): () => void {
   const controller = new AbortController();
   void (async () => {
@@ -315,6 +327,10 @@ function watchReplies(
       { botId },
       snapshot.cursor ?? 0,
       (event) => {
+        if (event.type === "thread.call.ended") {
+          onEnded(typeof event.payload?.callId === "string" ? event.payload.callId : undefined);
+          return;
+        }
         snapshot = applyMobileThreadEvent(snapshot, event) ?? snapshot;
         // Wait for the run to settle so half-written blocks are never spoken.
         if (snapshot.run && ACTIVE_RUN_STATUSES.some((s) => s === snapshot.run?.status)) return;

@@ -32,6 +32,7 @@ function fakes() {
   const send = vi.fn(async (_botId: string, _text: string, _clientNonce: string) => undefined);
   const unwatch = vi.fn();
   let reply: (messageId: string, text: string) => void = () => undefined;
+  let ended: (callId: string | undefined) => void = () => undefined;
   const deps: CallDeps = {
     record: (signal) => {
       signals.push(signal);
@@ -47,8 +48,9 @@ function fakes() {
       speeches.push(next);
       return next.promise;
     },
-    watch: (_botId, onReply) => {
+    watch: (_botId, onReply, onCallEnded) => {
       reply = onReply;
+      ended = onCallEnded;
       return unwatch;
     },
   };
@@ -62,6 +64,7 @@ function fakes() {
     say: (text: string) =>
       recordings[recordings.length - 1]?.resolve({ base64: text, mimeType: "audio/m4a" }),
     replyWith: (messageId: string, text: string) => reply(messageId, text),
+    endedCall: (callId: string | undefined) => ended(callId),
   };
 }
 
@@ -148,6 +151,33 @@ describe("mobile call session", () => {
     await flush();
     expect(getSnapshot()).toBeNull();
     expect(fake.unwatch).toHaveBeenCalled();
+  });
+
+  it("hangs up after the reply when the bot ends the call itself", async () => {
+    const fake = fakes();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    fake.say("end the call and make me a list");
+    await flush();
+    fake.endedCall(callIdFromClientNonce(fake.send.mock.calls[0]?.[2]));
+    fake.replyWith("message-1", "Talk soon.");
+    expect(getSnapshot()?.phase).toBe("speaking");
+    fake.speeches[0]?.resolve();
+    await flush();
+
+    expect(getSnapshot()).toBeNull();
+  });
+
+  it("ignores a call ended event from another call", async () => {
+    const fake = fakes();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    fake.say("status please");
+    await flush();
+    fake.endedCall("someone-elses-call");
+    fake.replyWith("message-1", "It is green.");
+    fake.speeches[0]?.resolve();
+    await flush();
+
+    expect(getSnapshot()?.phase).toBe("listening");
   });
 
   it("reports a failed recording and retries, then hangs up cleanly", async () => {

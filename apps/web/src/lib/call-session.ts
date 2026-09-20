@@ -212,7 +212,13 @@ function watchThread(botId: string) {
     applyEvent: (event) => {
       if (isThreadSnapshotEvent(event)) commit(reduceThreadSnapshot(thread, event));
     },
-    onEvent: () => undefined,
+    onEvent: (event) => {
+      // The bot hung up mid-run: speak the reply it is finishing, then end the call.
+      if (event.type !== "thread.call.ended" || event.payload.callId !== callId) return;
+      if (hangUpAfterReply) return;
+      hangUpAfterReply = true;
+      hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT);
+    },
   });
 }
 

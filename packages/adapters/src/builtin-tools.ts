@@ -730,6 +730,12 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "end_call",
+    description:
+      "End the current voice call. Call this when the user asks to hang up or end the call, or the conversation is clearly finished. Say your goodbye in the same reply; you may keep working on any remaining task afterwards in chat.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "skill_read",
     description:
       "Load a Claude Agent Skill (SKILL.md recipe) by exact name. Call this when a catalog skill matches the user's request, then follow it immediately.",
