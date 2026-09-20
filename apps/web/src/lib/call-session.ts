@@ -7,10 +7,10 @@ import {
   runThreadSubscription,
   speechFromBlocks,
   spokenDecision,
+  spokenMemory,
 } from "@rakazo/core";
 import { useSyncExternalStore } from "react";
 import { dictation } from "./dictation.js";
-import { spokenMemory } from "./echo.js";
 import { rpc } from "./rpc.js";
 import { isThreadSnapshotEvent, reduceThreadSnapshot } from "./thread-events.js";
 import { speaker } from "./tts.js";

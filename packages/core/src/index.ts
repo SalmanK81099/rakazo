@@ -18,6 +18,7 @@ export * from "./composer-mentions.js";
 export * from "./composer-slash.js";
 export * from "./computer-updates.js";
 export * from "./cron.js";
+export * from "./echo.js";
 export * from "./events.js";
 export * from "./farewell.js";
 export * from "./featured-connectors.js";
