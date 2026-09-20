@@ -5451,7 +5451,7 @@ const Composer = memo(function Composer({
             className="max-h-32 min-h-[24px] min-w-[8rem] flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-[15.5px] leading-6 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-40"
           />
         </div>
-        {onVoice ? (
+        {onVoice && draft.trim().length === 0 ? (
           <Button
             variant="outline"
             size="icon"

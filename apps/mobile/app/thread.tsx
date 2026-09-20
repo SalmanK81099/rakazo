@@ -2145,7 +2145,7 @@ function Thread() {
               }}
             />
           </View>
-          {botId && !onCall ? (
+          {botId && !onCall && draft.trim().length === 0 ? (
             <Pressable
               accessibilityLabel={t("Call")}
               onPress={() => void startVoiceCall()}
