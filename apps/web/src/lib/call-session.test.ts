@@ -517,7 +517,7 @@ describe("call session", () => {
     const live = reduceThreadSnapshot(snapshot([]), userMessageEvent(String(callId)));
     expect(live?.messages[0]?.callId).toBe(callId);
     expect(groupVoiceChats(live?.messages ?? [])).toEqual([
-      { kind: "voiceChat", callId, messages: live?.messages },
+      { kind: "voiceChat", key: `call:${callId}`, callId, messages: live?.messages },
     ]);
   });
 

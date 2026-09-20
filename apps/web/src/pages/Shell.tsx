@@ -4615,10 +4615,7 @@ const Transcript = memo(function Transcript({
           </button>
         ) : null}
         {groupVoiceChats(reactionView.visibleMessages).map((item) => {
-          if (item.kind === "voiceChat")
-            return (
-              <VoiceChatCard key={`call-${item.callId}-${item.messages[0]?.id}`} group={item} />
-            );
+          if (item.kind === "voiceChat") return <VoiceChatCard key={item.key} group={item} />;
           const message = item.message;
           if (!message.blocks.some((block) => !isToolActivityBlock(block))) return null;
           const peerReceipt = isPeerReceiptBlocks(message.blocks);

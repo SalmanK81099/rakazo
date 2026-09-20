@@ -11,6 +11,7 @@ import {
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
+import type { ThreadItem } from "@rakazo/core";
 import {
   abortableDelay,
   attachmentsForThread,
@@ -29,7 +30,6 @@ import {
   type SlashActionId,
   selectedAskActionLabel,
   serializeComposerPrompt,
-  type ThreadItem,
   truncateSlashDescription,
   userVisibleMessages,
   withLiveStreamingProgress,
@@ -1694,11 +1694,7 @@ function Thread() {
             ref={scroll}
             data={liveItems}
             inverted
-            keyExtractor={(item) =>
-              item.kind === "voiceChat"
-                ? `call:${item.callId}:${item.messages[0]?.id}`
-                : item.message.id
-            }
+            keyExtractor={(item) => (item.kind === "voiceChat" ? item.key : item.message.id)}
             extraData={answerableAskMessageId}
             style={{ flex: 1, marginTop: 8 }}
             maintainVisibleContentPosition={{ minIndexForVisible: 0 }}

@@ -279,6 +279,26 @@ describe("mobile call session", () => {
     expect(fake.closeCall).toHaveBeenCalledWith("bot-1", callId);
   });
 
+  it("drops a run id that lands after the same bot was called again", async () => {
+    const fake = fakes();
+    const pending = deferred<string | undefined>();
+    fake.send.mockReturnValueOnce(pending.promise);
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
+    fake.say("status please");
+    await flush();
+
+    endCall();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
+    pending.resolve("run-1");
+    await flush();
+
+    // The new call registered no run of its own, so nothing is filtered against the old one.
+    fake.replyWith("message-1", "All good.", "run-2");
+    expect(fake.spoken).toEqual(["All good."]);
+  });
+
   it("closes the call server-side once when the caller says goodbye", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);

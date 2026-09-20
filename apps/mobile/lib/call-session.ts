@@ -318,6 +318,9 @@ async function handleTranscript(raw: string): Promise<void> {
     return;
   }
   const { botId } = state;
+  // The call this turn belongs to: hanging up and calling the same bot again before
+  // send resolves must not hand the new call the old run.
+  const turnCallId = callId;
   set({
     phase: "thinking",
     heard: text,
@@ -328,10 +331,10 @@ async function handleTranscript(raw: string): Promise<void> {
     hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT_MS);
   }
   try {
-    const runId = await deps.send(botId, text, callClientNonce(callId));
-    if (state?.botId === botId) callRunId = runId ?? null;
+    const runId = await deps.send(botId, text, callClientNonce(turnCallId));
+    if (state?.botId === botId && callId === turnCallId) callRunId = runId ?? null;
   } catch (error) {
-    if (state?.botId !== botId) return;
+    if (state?.botId !== botId || callId !== turnCallId) return;
     failTurn(error);
   }
 }
@@ -605,6 +608,7 @@ function watchReplies(
               return;
             }
             snapshot = applyMobileThreadEvent(snapshot, event) ?? snapshot;
+            if (!snapshot) return;
             const message = latestSpokenCallReply(snapshot.messages, watchedCallId);
             if (!message || message.id === lastSeen) return;
             // Wait for the message's own run to settle so half-written blocks are never

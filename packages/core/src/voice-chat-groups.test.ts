@@ -78,6 +78,22 @@ describe("groupVoiceChats", () => {
     expect(latestSpokenCallReply([callTurn, callReply, marker, wrapUp], "call-1")).toBeUndefined();
   });
 
+  it("numbers the segments a typed message split a call into, and keeps them across pages", () => {
+    const opening = message({ role: "user", callId: "call-1" });
+    const resumed = message({ role: "user", callId: "call-1" });
+    const page = [opening, message({ role: "user" }), resumed];
+
+    expect(
+      groupVoiceChats(page).flatMap((item) => (item.kind === "voiceChat" ? [item.key] : [])),
+    ).toEqual(["call:call-1", "call:call-1:2"]);
+
+    // An older page lands in front and extends the first segment: the keys hold.
+    const older = [message({ role: "bot", callId: "call-1" }), ...page];
+    expect(
+      groupVoiceChats(older).flatMap((item) => (item.kind === "voiceChat" ? [item.key] : [])),
+    ).toEqual(["call:call-1", "call:call-1:2"]);
+  });
+
   it("joins the bot reply to the call by runId", () => {
     const items = groupVoiceChats([
       message({ role: "user", callId: "call-1", runId: "run-1" }),

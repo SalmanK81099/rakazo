@@ -13,6 +13,12 @@ export type VoiceChatMessage = {
 
 export type VoiceChatGroup<T extends VoiceChatMessage = VoiceChatMessage> = {
   kind: "voiceChat";
+  /**
+   * List key: `call:<callId>` for a call's first group, `call:<callId>:<n>` for the
+   * later segments a typed message split it into. Keying off the first message would
+   * change when an older page extends a segment, remounting the card.
+   */
+  key: string;
   callId: string;
   messages: T[];
   /** The `voice_call` message the bot left when it hung up; it closes the group. */
@@ -35,6 +41,7 @@ export function groupVoiceChats<T extends VoiceChatMessage>(messages: T[]): Thre
   const items: ThreadItem<T>[] = [];
   let open: VoiceChatGroup<T> | undefined;
   let openRunIds = new Set<string>();
+  const segments = new Map<string, number>();
   for (const message of messages) {
     if (open) {
       const joinsByRun = Boolean(
@@ -53,7 +60,14 @@ export function groupVoiceChats<T extends VoiceChatMessage>(messages: T[]): Thre
       open = undefined;
     }
     if (message.callId) {
-      open = { kind: "voiceChat", callId: message.callId, messages: [message] };
+      const segment = (segments.get(message.callId) ?? 0) + 1;
+      segments.set(message.callId, segment);
+      open = {
+        kind: "voiceChat",
+        key: segment === 1 ? `call:${message.callId}` : `call:${message.callId}:${segment}`,
+        callId: message.callId,
+        messages: [message],
+      };
       openRunIds = new Set(message.runId ? [message.runId] : []);
       items.push(open);
       continue;
