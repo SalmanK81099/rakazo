@@ -13,6 +13,7 @@ import {
   changePassword,
   currentApiBase,
   deleteAccount,
+  IDLE_TIMEOUT_MS,
   loadApiBase,
   MAX_MOBILE_AUTH_RESPONSE_BYTES,
   MAX_MOBILE_RPC_RESPONSE_BYTES,
@@ -1600,6 +1601,65 @@ describe("mobile thread subscription", () => {
     await expect(
       subscribeThread({ botId: "bot-1" }, -1, vi.fn(), new AbortController().signal),
     ).rejects.toThrow("rpc threads/subscribe failed (200)");
+  });
+
+  it("ignores heartbeat frames so the caller's cursor never skips an event", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"json":{"type":"heartbeat","seq":0,"payload":{}}}\n\n' +
+              ": keepalive\n\n" +
+              'data: {"json":{"type":"thread.progress","seq":1,"payload":{}}}\n\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(stream, { status: 200 })),
+    );
+    const onEvent = vi.fn();
+
+    await subscribeThread({ botId: "bot-1" }, -1, onEvent, new AbortController().signal);
+
+    expect(onEvent).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ type: "thread.progress", seq: 1 }),
+    );
+  });
+
+  it("gives up on a silent stream after the idle timeout so the caller reconnects", async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start() {},
+      cancel() {
+        cancelled = true;
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(stream, { status: 200 })),
+    );
+    const onEvent = vi.fn();
+    const abort = new AbortController();
+
+    const running = subscribeThread({ botId: "bot-1" }, -1, onEvent, abort.signal);
+    let settled = false;
+    void running.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(IDLE_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await running;
+
+    expect(settled).toBe(true);
+    expect(cancelled).toBe(true);
+    expect(abort.signal.aborted).toBe(false);
+    vi.useRealTimers();
   });
 });
 

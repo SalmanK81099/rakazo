@@ -90,6 +90,7 @@ import type {
   McpServer,
   Me,
   MessageBlock,
+  ProductEvent,
   SpaceNavigation,
 } from "@rakazo/contracts";
 import {
@@ -225,6 +226,8 @@ import {
 
 const MAX_COMPUTER_TEXT_FILE_BYTES = 2 * 1024 * 1024;
 const THREAD_MESSAGE_PAGE_SIZE = 100;
+/** Silence longer than this on a thread stream is indistinguishable from a dead socket. */
+export const HEARTBEAT_MS = 20_000;
 const EXPORT_MESSAGE_PAGE_SIZE = 500;
 
 async function reconcilePendingConnections(
@@ -1528,15 +1531,45 @@ export function createRouter(deps: RouterDeps) {
       subscribe: authed.threads.subscribe.handler(async function* ({ context, input }) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         const peerRunCache = new Map<string, Promise<boolean>>();
-        for await (const event of deps.events.follow(
-          target.threadId,
-          input.cursor,
-          context.signal,
-        )) {
-          if (await isPeerRun(deps.prisma, event.runId, peerRunCache)) {
-            if (!shouldForwardPeerThreadEvent(event)) continue;
+        const follow = deps.events.follow(target.threadId, input.cursor, context.signal);
+        // A half-open stream looks identical to an idle one, so punctuate silence:
+        // the client treats any frame as liveness and reconnects once they stop.
+        let pending: Promise<IteratorResult<ProductEvent>> | undefined;
+        try {
+          while (!context.signal?.aborted) {
+            pending ??= follow.next();
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const next = await Promise.race([
+              pending,
+              new Promise<"silent">((resolve) => {
+                timer = setTimeout(() => resolve("silent"), HEARTBEAT_MS);
+              }),
+            ]).finally(() => clearTimeout(timer));
+            if (next === "silent") {
+              // Keep `pending` so the in-flight read stays the next event in order.
+              yield {
+                id: "heartbeat",
+                spaceId: context.actor.spaceId,
+                threadId: target.threadId,
+                botId: target.threadId,
+                seq: 0,
+                type: "heartbeat",
+                createdAt: new Date().toISOString(),
+                payload: {},
+              };
+              continue;
+            }
+            pending = undefined;
+            if (next.done) return;
+            const event = next.value;
+            if (await isPeerRun(deps.prisma, event.runId, peerRunCache)) {
+              if (!shouldForwardPeerThreadEvent(event)) continue;
+            }
+            yield event;
           }
-          yield event;
+        } finally {
+          // Not awaited: closing can queue behind a read that the abort has not landed on yet.
+          void follow.return(undefined).catch(() => {});
         }
       }),
       send: authed.threads.send.handler(async ({ context, input }) => {

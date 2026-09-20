@@ -902,6 +902,9 @@ type ThreadEvent = {
   payload?: Record<string, unknown>;
 };
 
+/** No frame at all for this long means the stream is half-open; the server beats far faster. */
+export const IDLE_TIMEOUT_MS = 45_000;
+
 export async function subscribeThread(
   target: { botId: string } | { groupId: string },
   cursor: number,
@@ -924,7 +927,19 @@ export async function subscribeThread(
   const decoder = new TextDecoder();
   let buffer = "";
   while (!signal.aborted) {
-    const { done, value } = await reader.read();
+    // A half-open socket never reports done, so give up on silence and let the caller reconnect.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = await Promise.race([
+      reader.read(),
+      new Promise<"idle">((resolve) => {
+        timer = setTimeout(() => resolve("idle"), IDLE_TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (read === "idle") {
+      void reader.cancel().catch(() => undefined);
+      return;
+    }
+    const { done, value } = read;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const chunks = buffer.split("\n\n");
@@ -938,7 +953,8 @@ export async function subscribeThread(
       if (!data || data === "[DONE]") continue;
       try {
         const parsed = JSON.parse(data) as { json?: ThreadEvent; error?: { message?: string } };
-        if (parsed.json?.type) onEvent(parsed.json);
+        // Heartbeats prove liveness only; forwarding one would advance the caller's cursor.
+        if (parsed.json?.type && parsed.json.type !== "heartbeat") onEvent(parsed.json);
       } catch {
         // ignore keepalives and partial frames
       }
@@ -950,7 +966,7 @@ export function applyMobileThreadEvent(
   prev: MobileSnapshot | null,
   event: ThreadEvent,
 ): MobileSnapshot | null {
-  if (!prev) return prev;
+  if (!prev || event.type === "heartbeat") return prev;
   if (event.type === "thread.cleared") {
     return {
       ...prev,

@@ -47,6 +47,8 @@ export const ProductEventType = z.enum([
   "group.created",
   "group.updated",
   "group.handoff",
+  /** Liveness only: never persisted, never applied to a snapshot, always seq 0. */
+  "heartbeat",
 ]);
 export type ProductEventType = z.infer<typeof ProductEventType>;
 
