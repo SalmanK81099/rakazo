@@ -1616,6 +1616,14 @@ export function createRouter(deps: RouterDeps) {
           return { ok: true as const };
         }
         const committed = await deps.prisma.$transaction(async (tx) => {
+          if (input.clientNonce) {
+            const existing = await tx.message.findUnique({
+              where: {
+                threadId_clientNonce: { threadId: target.threadId, clientNonce: input.clientNonce },
+              },
+            });
+            if (existing) return null;
+          }
           await lockOwnedGroup(tx, context.actor, target.groupId);
           const group = await tx.chatGroup.findFirst({
             where: {
@@ -1690,13 +1698,15 @@ export function createRouter(deps: RouterDeps) {
           await touchGroupUpdatedAt(tx, target.groupId);
           return { runId: run?.id, eventSeq: event.seq };
         });
-        await deps.events.notify(target.threadId, committed.eventSeq).catch((error) => {
-          getLogger().error("group follow-up realtime notification", error);
-        });
-        if (committed.runId) {
-          await deps.jobs.enqueue(runContinueJob(committed.runId)).catch((error) => {
-            getLogger().error("group follow-up enqueue", error);
+        if (committed) {
+          await deps.events.notify(target.threadId, committed.eventSeq).catch((error) => {
+            getLogger().error("group follow-up realtime notification", error);
           });
+          if (committed.runId) {
+            await deps.jobs.enqueue(runContinueJob(committed.runId)).catch((error) => {
+              getLogger().error("group follow-up enqueue", error);
+            });
+          }
         }
         return { ok: true as const };
       }),
