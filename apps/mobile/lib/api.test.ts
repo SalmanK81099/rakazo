@@ -1747,6 +1747,28 @@ describe("mobile thread event reduction", () => {
     });
   });
 
+  it("keeps a message in its call when an update leaves the call id out", () => {
+    const spoken: MobileMessage = {
+      ...mobileMessage("message-1", [{ kind: "text", text: "Hi" }]),
+      callId: "call-1",
+    };
+    const initial = snapshot([spoken]);
+
+    const next = applyMobileThreadEvent(initial, {
+      type: "thread.message.updated",
+      seq: 5,
+      payload: {
+        messageId: "message-1",
+        role: "bot",
+        blocks: [{ kind: "text", text: "Hi. Talk soon." }],
+      },
+    });
+
+    expect(next?.messages.find((message) => message.id === "message-1")).toMatchObject({
+      callId: "call-1",
+    });
+  });
+
   it("prepends ordered history pages without duplicating the boundary message", () => {
     const initial = snapshot([mobileMessage("m-2", [], 2), mobileMessage("m-3", [], 3)], 2);
 

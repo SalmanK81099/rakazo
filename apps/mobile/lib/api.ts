@@ -1131,11 +1131,17 @@ export function applyMobileThreadEvent(
   }
   if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
     const { remaining } = takeLiveMessage(prev.messages, progressMessageId(event));
+    const id = String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`);
     const next: MobileMessage = {
-      id: String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`),
+      id,
       runId: event.runId ? String(event.runId) : undefined,
       role: (event.payload?.role as MobileMessage["role"]) ?? "bot",
-      callId: typeof event.payload?.callId === "string" ? event.payload.callId : undefined,
+      // An update can leave the call id out — the `end_call` marker does — so keep the one
+      // the message already carries instead of dropping it out of its call.
+      callId:
+        typeof event.payload?.callId === "string"
+          ? event.payload.callId
+          : prev.messages.find((message) => message.id === id)?.callId,
       blocks: (event.payload?.blocks as MobileMessage["blocks"]) ?? [],
       botId: event.botId ?? (event.payload?.botId ? String(event.payload.botId) : undefined),
       replyToMessageId: event.payload?.replyToMessageId

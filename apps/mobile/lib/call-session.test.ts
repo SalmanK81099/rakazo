@@ -36,10 +36,13 @@ function fakes(opts: { onDevice?: boolean } = {}) {
   const recordings: Array<Deferred<CallClip | null>> = [];
   const signals: AbortSignal[] = [];
   const speeches: Array<Deferred<void>> = [];
-  const send = vi.fn(async (_botId: string, _text: string, _clientNonce: string) => undefined);
+  const send = vi.fn(
+    async (_botId: string, _text: string, _clientNonce: string): Promise<string | undefined> =>
+      "run-1",
+  );
   const closeCall = vi.fn(async (_botId: string, _callId: string) => undefined);
   const unwatch = vi.fn();
-  let reply: (messageId: string, text: string) => void = () => undefined;
+  let reply: (messageId: string, text: string, runId?: string) => void = () => undefined;
   let ended: (ended: CallEnded) => void = () => undefined;
   const spoken: string[] = [];
   let handlers: DictationHandlers | null = null;
@@ -90,7 +93,7 @@ function fakes(opts: { onDevice?: boolean } = {}) {
     unwatch,
     say: (text: string) =>
       recordings[recordings.length - 1]?.resolve({ base64: text, mimeType: "audio/m4a" }),
-    replyWith: (messageId: string, text: string) => reply(messageId, text),
+    replyWith: (messageId: string, text: string, runId?: string) => reply(messageId, text, runId),
     endedCall: (callId: string | undefined, farewell?: string) => ended({ callId, farewell }),
   };
 }
@@ -325,6 +328,26 @@ describe("mobile call session", () => {
     ]);
   });
 
+  it("leaves a reply from another run out of the call", async () => {
+    const fake = fakes();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
+    fake.say("status please");
+    await flush();
+
+    // A message typed into the thread mid-call is answered on its own run.
+    fake.replyWith("message-typed", "Here is that list.", "run-typed");
+    expect(fake.spoken).toEqual([]);
+    expect(getSnapshot()).toMatchObject({ phase: "thinking" });
+
+    fake.replyWith("message-1", "It is green.", "run-1");
+    expect(fake.spoken).toEqual(["It is green."]);
+    expect(getSnapshot()?.exchanges).toEqual([
+      { role: "user", text: "status please" },
+      { role: "bot", text: "It is green." },
+    ]);
+  });
+
   it("speaks each reply once", async () => {
     const fake = fakes({ onDevice: true });
     startCall({ botId: "bot-1", botName: "Ada", transcribe: false }, fake.deps);
@@ -370,6 +393,25 @@ describe("mobile call session on a timer", () => {
       "actually hang on",
       expect.stringMatching(/^call:/),
     );
+  });
+
+  it("retries the first snapshot load instead of losing the feed", async () => {
+    const { rpc, subscribeThread } = await import("./api");
+    vi.mocked(rpc)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({ cursor: 3, messages: [], run: null } as never);
+    vi.mocked(subscribeThread).mockResolvedValue(undefined as never);
+    const fake = fakes();
+    const { watch: _watch, ...deps } = fake.deps;
+    startCall({ botId: "bot-1", botName: "Ada" }, deps);
+    await tick();
+    expect(subscribeThread).not.toHaveBeenCalled();
+
+    await tick(500);
+    expect(subscribeThread).toHaveBeenCalled();
+    expect(vi.mocked(subscribeThread).mock.calls[0]?.[1]).toBe(3);
+    vi.mocked(rpc).mockReset();
+    vi.mocked(subscribeThread).mockReset();
   });
 
   it("reconnects the call feed when the live stream ends", async () => {

@@ -8,12 +8,11 @@ import {
 import type { AudioRecorder } from "expo-audio";
 import { File } from "expo-file-system";
 import { useSyncExternalStore } from "react";
+import type { MobileMessage, MobileSnapshot } from "./api";
 import {
   applyMobileThreadEvent,
   blockText,
   captureApiRequestContext,
-  type MobileMessage,
-  type MobileSnapshot,
   rpc,
   subscribeThread,
 } from "./api";
@@ -51,7 +50,8 @@ export type CallDeps = {
   /** Fallback when the device cannot: record a clip and send it to the voice provider. */
   record: (signal: AbortSignal) => Promise<CallClip | null>;
   transcribe: (clip: CallClip, signal: AbortSignal) => Promise<string>;
-  send: (botId: string, text: string, clientNonce: string) => Promise<void>;
+  /** Resolves with the run the message started, so only that run's reply is spoken. */
+  send: (botId: string, text: string, clientNonce: string) => Promise<string | undefined>;
   /** Tells the server the caller hung up, so it files the call marker and the wrap-up run. */
   endCall: (botId: string, callId: string) => Promise<void>;
   speak: (botId: string, text: string) => Promise<void>;
@@ -59,7 +59,7 @@ export type CallDeps = {
   stopSpeaking: () => void;
   watch: (
     botId: string,
-    onReply: (messageId: string, text: string) => void,
+    onReply: (messageId: string, text: string, runId?: string) => void,
     onCallEnded: (ended: CallEnded) => void,
   ) => () => void;
 };
@@ -96,6 +96,8 @@ const MAX_CLIP_MS = 30_000;
 let state: CallState | null = null;
 /** Shared by every message this call sends, so the thread can group one call's exchange. */
 let callId = "";
+/** The run this call's last turn started: replies to anything else are not spoken. */
+let callRunId: string | null = null;
 let deps: CallDeps = productionDeps();
 let turn: AbortController | null = null;
 let unwatch: (() => void) | null = null;
@@ -151,6 +153,7 @@ export function startCall(
   endCall();
   deps = { ...productionDeps(), ...overrides };
   callId = randomId();
+  callRunId = null;
   canTranscribe = call.transcribe ?? true;
   onDevice = null;
   micOpen = false;
@@ -184,6 +187,7 @@ export function endCall(): void {
   hangUpTimer = null;
   hangUpAfterReply = false;
   botEndedCall = false;
+  callRunId = null;
   spokenMessageId = null;
   failures = 0;
   micOpen = false;
@@ -323,7 +327,8 @@ async function handleTranscript(raw: string): Promise<void> {
     hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT_MS);
   }
   try {
-    await deps.send(botId, text, callClientNonce(callId));
+    const runId = await deps.send(botId, text, callClientNonce(callId));
+    if (state?.botId === botId) callRunId = runId ?? null;
   } catch (error) {
     if (state?.botId !== botId) return;
     failTurn(error);
@@ -395,9 +400,11 @@ function cleanWords(text: string): string {
     .replace(/\s+/g, " ");
 }
 
-function onReply(messageId: string, text: string): void {
+function onReply(messageId: string, text: string, runId?: string): void {
   // Work the bot files after hanging up belongs in the thread, not in the caller's ear.
   if (!state || botEndedCall || messageId === spokenMessageId) return;
+  // A reply to something typed into the thread mid-call belongs on screen only.
+  if (callRunId && runId && runId !== callRunId) return;
   spokenMessageId = messageId;
   speakAndListen(text);
 }
@@ -537,8 +544,13 @@ async function transcribeClip(clip: CallClip, signal: AbortSignal): Promise<stri
   return body.text ?? "";
 }
 
-async function sendHeard(botId: string, text: string, clientNonce: string): Promise<void> {
-  await rpc("threads/send", { botId, clientNonce, text });
+async function sendHeard(
+  botId: string,
+  text: string,
+  clientNonce: string,
+): Promise<string | undefined> {
+  const sent = await rpc<{ runId?: string }>("threads/send", { botId, clientNonce, text });
+  return sent.runId;
 }
 
 async function closeCall(botId: string, id: string): Promise<void> {
@@ -554,23 +566,30 @@ async function speakReply(botId: string, text: string): Promise<void> {
 /** Live feed for the bot on the call, independent of whichever thread is on screen. */
 function watchReplies(
   botId: string,
-  onNewReply: (messageId: string, text: string) => void,
+  onNewReply: (messageId: string, text: string, runId?: string) => void,
   onEnded: (ended: CallEnded) => void,
 ): () => void {
   const controller = new AbortController();
   void (async () => {
-    let snapshot = await rpc<MobileSnapshot>(
-      "threads/get",
-      { botId },
-      { signal: controller.signal },
-    );
-    let lastSeen = lastBotMessage(snapshot)?.id ?? null;
-    let cursor = snapshot.cursor ?? 0;
+    let snapshot: MobileSnapshot | null = null;
+    let lastSeen: string | null = null;
+    let cursor = 0;
     let retry = FEED_RETRY_MIN_MS;
     // The stream returns on an idle timeout as well as on a real failure, and a call
-    // outlives both: pick it back up from the last seq until the caller hangs up.
+    // outlives both: pick it back up from the last seq until the caller hangs up. The
+    // first snapshot is loaded in here too, so a failed load retries instead of
+    // leaving the call with an open microphone and no feed.
     while (!controller.signal.aborted) {
       try {
+        if (!snapshot) {
+          snapshot = await rpc<MobileSnapshot>(
+            "threads/get",
+            { botId },
+            { signal: controller.signal },
+          );
+          lastSeen = lastBotMessage(snapshot)?.id ?? null;
+          cursor = snapshot.cursor ?? 0;
+        }
         await subscribeThread(
           { botId },
           cursor,
@@ -584,14 +603,17 @@ function watchReplies(
               return;
             }
             snapshot = applyMobileThreadEvent(snapshot, event) ?? snapshot;
-            // Wait for the run to settle so half-written blocks are never spoken.
-            if (snapshot.run && ACTIVE_RUN_STATUSES.some((s) => s === snapshot.run?.status)) return;
             const message = lastBotMessage(snapshot);
             if (!message || message.id === lastSeen) return;
+            // Wait for the message's own run to settle so half-written blocks are never
+            // spoken; another run still working says nothing about this one.
+            const run = snapshot?.run;
+            const fromAnotherRun = Boolean(message.runId && message.runId !== run?.id);
+            if (!fromAnotherRun && run && ACTIVE_RUN_STATUSES.some((s) => s === run.status)) return;
             const text = blockText(message).trim();
             if (!text) return;
             lastSeen = message.id;
-            onNewReply(message.id, text);
+            onNewReply(message.id, text, message.runId);
           },
           controller.signal,
         );
