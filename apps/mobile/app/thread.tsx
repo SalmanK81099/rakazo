@@ -1305,8 +1305,19 @@ function Thread() {
     if (!botId) return;
     try {
       const status = await rpc<{ ready: boolean; transcribe: boolean }>("voice/status");
-      if (!status.ready || !status.transcribe) {
+      if (!status.ready) {
         router.push("/voice");
+        return;
+      }
+      if (!status.transcribe) {
+        Alert.alert(
+          t("Calls need transcription"),
+          t("Connect ElevenLabs, OpenAI, or Fish Audio to talk to a bot. Cartesia can only speak."),
+          [
+            { text: t("Not now"), style: "cancel" },
+            { text: t("Open Voice"), onPress: () => router.push("/voice") },
+          ],
+        );
         return;
       }
       startCall({
