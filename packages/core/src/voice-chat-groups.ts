@@ -63,6 +63,23 @@ export function groupVoiceChats<T extends VoiceChatMessage>(messages: T[]): Thre
   return items;
 }
 
+/** Newest bot turn still inside this call's open card. Typed turns and wrap-up sit outside. */
+export function latestSpokenCallReply<T extends VoiceChatMessage>(
+  messages: T[],
+  callId: string,
+): T | undefined {
+  const groups = groupVoiceChats(messages).filter(
+    (item): item is VoiceChatGroup<T> => item.kind === "voiceChat" && item.callId === callId,
+  );
+  const group = groups.at(-1);
+  if (!group || group.marker) return undefined;
+  for (let index = group.messages.length - 1; index >= 0; index -= 1) {
+    const message = group.messages[index];
+    if (message?.role === "bot") return message;
+  }
+  return undefined;
+}
+
 function isCallMarker(message: VoiceChatMessage): boolean {
   return message.role === "bot" && message.blocks[0]?.kind === "voice_call";
 }

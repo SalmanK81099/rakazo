@@ -1787,7 +1787,7 @@ export function createRouter(deps: RouterDeps) {
               threadId,
               botId,
               type: "thread.message.created",
-              payload: { messageId: message.id, role: "bot", blocks },
+              payload: { messageId: message.id, role: "bot", blocks, callId: input.callId },
             });
             const task = await tx.task.create({
               data: {

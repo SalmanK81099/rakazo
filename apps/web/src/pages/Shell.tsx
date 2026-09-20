@@ -3381,6 +3381,7 @@ export function ShellPage() {
             onRemoveAttachment={removeAttachment}
             onSend={sendMessage}
             onStop={stopRun}
+            voiceReady={Boolean(voiceStatus?.ready)}
             onVoice={
               !inGroup && active
                 ? () => {
@@ -4856,6 +4857,7 @@ const Composer = memo(function Composer({
   onSend,
   onStop,
   onVoice,
+  voiceReady,
   replyTarget,
   replyQuote,
   replyTargetName,
@@ -4882,6 +4884,7 @@ const Composer = memo(function Composer({
   onSend: (text: string, mentions?: ComposerMention[]) => Promise<void>;
   onStop: () => Promise<void>;
   onVoice?: () => void;
+  voiceReady?: boolean;
   replyTarget?: ThreadMessage | null;
   replyQuote?: string | null;
   replyTargetName?: string;
@@ -5453,7 +5456,7 @@ const Composer = memo(function Composer({
             className="max-h-32 min-h-[24px] min-w-[8rem] flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-[15.5px] leading-6 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-40"
           />
         </div>
-        {onVoice && draft.trim().length === 0 ? (
+        {onVoice && (!voiceReady || draft.trim().length === 0) ? (
           <Button
             variant="outline"
             size="icon"

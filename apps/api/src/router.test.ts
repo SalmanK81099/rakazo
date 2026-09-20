@@ -1345,6 +1345,7 @@ describe("threads.endCall", () => {
       title: "",
       messageId: "message-1",
     });
+    expect(events[0]?.payload).toMatchObject({ callId: "call-1", messageId: "message-1" });
     expect(tx.run.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ trigger: "call_end", taskId: "task-1" }),

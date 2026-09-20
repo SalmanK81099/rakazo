@@ -346,7 +346,6 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "browser_snapshot",
   "list_secrets",
   "cloud_agent_status",
-  "end_call",
 ]);
 /** Added to the turn prompt when the user spoke this message on a live voice call. */
 export const VOICE_CALL_INSTRUCTION =
@@ -3115,7 +3114,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   botId: bot.id,
                   runId: run.id,
                   type: "thread.message.updated",
-                  payload: { messageId: existing.id, role: "bot", blocks },
+                  payload: { messageId: existing.id, role: "bot", blocks, callId },
                 });
               }
               markerId = existing.id;
@@ -5094,7 +5093,12 @@ async function persistMessageInTransaction(
     botId: run.botId,
     type: "thread.message.created",
     runId: run.id,
-    payload: { messageId: message.id, role, blocks },
+    payload: {
+      messageId: message.id,
+      role,
+      blocks,
+      callId: callIdFromClientNonce(clientNonce),
+    },
   });
   return { message, eventSeq: event.seq };
 }

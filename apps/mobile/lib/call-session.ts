@@ -3,12 +3,13 @@ import {
   abortableDelay,
   callClientNonce,
   isFarewell,
+  latestSpokenCallReply,
   spokenMemory,
 } from "@rakazo/core";
 import type { AudioRecorder } from "expo-audio";
 import { File } from "expo-file-system";
 import { useSyncExternalStore } from "react";
-import type { MobileMessage, MobileSnapshot } from "./api";
+import type { MobileSnapshot } from "./api";
 import {
   applyMobileThreadEvent,
   blockText,
@@ -570,6 +571,7 @@ function watchReplies(
   onEnded: (ended: CallEnded) => void,
 ): () => void {
   const controller = new AbortController();
+  const watchedCallId = callId;
   void (async () => {
     let snapshot: MobileSnapshot | null = null;
     let lastSeen: string | null = null;
@@ -587,7 +589,7 @@ function watchReplies(
             { botId },
             { signal: controller.signal },
           );
-          lastSeen = lastBotMessage(snapshot)?.id ?? null;
+          lastSeen = latestSpokenCallReply(snapshot.messages, watchedCallId)?.id ?? null;
           cursor = snapshot.cursor ?? 0;
         }
         await subscribeThread(
@@ -603,7 +605,7 @@ function watchReplies(
               return;
             }
             snapshot = applyMobileThreadEvent(snapshot, event) ?? snapshot;
-            const message = lastBotMessage(snapshot);
+            const message = latestSpokenCallReply(snapshot.messages, watchedCallId);
             if (!message || message.id === lastSeen) return;
             // Wait for the message's own run to settle so half-written blocks are never
             // spoken; another run still working says nothing about this one.
@@ -619,6 +621,7 @@ function watchReplies(
         );
         retry = FEED_RETRY_MIN_MS;
       } catch {
+        if (controller.signal.aborted) return;
         retry = Math.min(FEED_RETRY_MAX_MS, retry * 2);
       }
       if (controller.signal.aborted) return;
@@ -630,15 +633,6 @@ function watchReplies(
 
 function asText(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function lastBotMessage(snapshot: MobileSnapshot | null): MobileMessage | undefined {
-  if (!snapshot) return undefined;
-  for (let index = snapshot.messages.length - 1; index >= 0; index -= 1) {
-    const message = snapshot.messages[index];
-    if (message?.role === "bot") return message;
-  }
-  return undefined;
 }
 
 function randomId(): string {

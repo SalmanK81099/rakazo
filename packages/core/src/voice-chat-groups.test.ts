@@ -1,6 +1,11 @@
 import type { ThreadMessage } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
-import { groupVoiceChats, voiceChatDuration, voiceChatSummary } from "./voice-chat-groups.js";
+import {
+  groupVoiceChats,
+  latestSpokenCallReply,
+  voiceChatDuration,
+  voiceChatSummary,
+} from "./voice-chat-groups.js";
 
 let seq = 0;
 function message(fields: Partial<ThreadMessage> & { role: ThreadMessage["role"] }): ThreadMessage {
@@ -37,6 +42,40 @@ describe("groupVoiceChats", () => {
     ]);
 
     expect(items.map((item) => item.kind)).toEqual(["voiceChat", "message", "voiceChat"]);
+  });
+
+  it("does not speak a typed concurrent reply into the call", () => {
+    const callTurn = message({ role: "user", callId: "call-1", runId: "run-1" });
+    const callReply = message({ role: "bot", runId: "run-1" });
+    const typed = message({ role: "user", runId: "run-1" });
+    const typedReply = message({
+      role: "bot",
+      runId: "run-1",
+      blocks: [{ kind: "text", text: "Typed answer" }],
+    });
+
+    expect(latestSpokenCallReply([callTurn, callReply], "call-1")?.id).toBe(callReply.id);
+    expect(latestSpokenCallReply([callTurn, callReply, typed, typedReply], "call-1")?.id).toBe(
+      callReply.id,
+    );
+  });
+
+  it("stops offering a spoken reply once the hang-up marker closed the card", () => {
+    const callTurn = message({ role: "user", callId: "call-1", runId: "run-1" });
+    const callReply = message({ role: "bot", runId: "run-1" });
+    const marker = message({
+      role: "bot",
+      runId: "run-1",
+      callId: "call-1",
+      blocks: [{ kind: "voice_call", callId: "call-1", title: "Done", farewell: "Bye" }],
+    });
+    const wrapUp = message({
+      role: "bot",
+      runId: "run-1",
+      blocks: [{ kind: "text", text: "Here is the list" }],
+    });
+
+    expect(latestSpokenCallReply([callTurn, callReply, marker, wrapUp], "call-1")).toBeUndefined();
   });
 
   it("joins the bot reply to the call by runId", () => {
