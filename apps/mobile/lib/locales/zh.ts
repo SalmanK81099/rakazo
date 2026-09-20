@@ -144,8 +144,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Configured by deployment": "由部署配置",
   Connect: "连接",
   "Connect a voice provider first.": "请先连接语音提供商。",
-  "Connect ElevenLabs, OpenAI, or Fish Audio to talk to a bot. Cartesia can only speak.":
-    "连接 ElevenLabs、OpenAI 或 Fish Audio 才能与机器人对话。Cartesia 只能朗读。",
+  "Allow speech recognition in Settings, or connect ElevenLabs, OpenAI, or Fish Audio.":
+    "请在“设置”中允许语音识别，或连接 ElevenLabs、OpenAI 或 Fish Audio。",
   "Connect API key": "连接 API 密钥",
   "Connect Executor": "连接 Executor",
   "Connect Treg": "连接 Treg",

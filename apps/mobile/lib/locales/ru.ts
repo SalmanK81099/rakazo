@@ -156,8 +156,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "Computer is stopped": "Компьютер остановлен",
   "Configured by deployment": "Настроено развёртыванием",
   Connect: "Подключить",
-  "Connect ElevenLabs, OpenAI, or Fish Audio to talk to a bot. Cartesia can only speak.":
-    "Подключите ElevenLabs, OpenAI или Fish Audio, чтобы говорить с ботом. Cartesia умеет только озвучивать.",
+  "Allow speech recognition in Settings, or connect ElevenLabs, OpenAI, or Fish Audio.":
+    "Разрешите распознавание речи в Настройках или подключите ElevenLabs, OpenAI или Fish Audio.",
   "Connect a voice provider first.": "Сначала подключите провайдера голосовой связи.",
   "Connect API key": "Подключить API-ключ",
   "Connect Executor": "Подключить Executor",

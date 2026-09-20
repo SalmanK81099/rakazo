@@ -101,6 +101,7 @@ import { type MobileArtifactTarget, openMobileArtifact } from "../lib/artifact-o
 import { nextAutoSpeakAction } from "../lib/auto-speak";
 import { confirmDeleteBot } from "../lib/bot-lifecycle";
 import { startCall, useCallSession } from "../lib/call-session";
+import { available as dictationAvailable } from "../lib/dictation";
 import { cancelFocusPrompt, focusPromptThreadActive } from "../lib/focus-prompt";
 import { dateLocaleForUi, t, useI18n } from "../lib/i18n";
 import { saveLastBotId } from "../lib/last-bot";
@@ -1309,10 +1310,11 @@ function Thread() {
         router.push("/voice");
         return;
       }
-      if (!status.transcribe) {
+      // The device recognising speech itself is enough: a speak-only provider still calls.
+      if (!status.transcribe && !(await dictationAvailable())) {
         Alert.alert(
           t("Calls need transcription"),
-          t("Connect ElevenLabs, OpenAI, or Fish Audio to talk to a bot. Cartesia can only speak."),
+          t("Allow speech recognition in Settings, or connect ElevenLabs, OpenAI, or Fish Audio."),
           [
             { text: t("Not now"), style: "cancel" },
             { text: t("Open Voice"), onPress: () => router.push("/voice") },
@@ -1324,6 +1326,7 @@ function Thread() {
         botId,
         botName: name ?? t("Bot"),
         botColor: mentionBots.find((bot) => bot.id === botId)?.color,
+        transcribe: status.transcribe,
       });
     } catch {
       router.push("/voice");

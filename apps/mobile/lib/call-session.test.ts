@@ -1,10 +1,17 @@
 import { callIdFromClientNonce } from "@rakazo/core";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CallClip, CallDeps, CallEnded } from "./call-session";
-import { endCall, getSnapshot, startCall, subscribe, toggleMute } from "./call-session";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CallClip, CallDeps, CallEnded, DictationHandlers } from "./call-session";
+import {
+  endCall,
+  getSnapshot,
+  INTERIM_BARGE_IN_MS,
+  startCall,
+  subscribe,
+  toggleMute,
+} from "./call-session";
 
 vi.mock("expo-file-system", () => ({ File: class {}, Paths: {} }));
-vi.mock("./voice", () => ({ speakText: vi.fn() }));
+vi.mock("./voice", () => ({ speakText: vi.fn(), stopSpeaking: vi.fn() }));
 vi.mock("./api", () => ({
   applyMobileThreadEvent: vi.fn(),
   blockText: vi.fn(),
@@ -25,7 +32,7 @@ function deferred<T>(): Deferred<T> {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function fakes() {
+function fakes(opts: { onDevice?: boolean } = {}) {
   const recordings: Array<Deferred<CallClip | null>> = [];
   const signals: AbortSignal[] = [];
   const speeches: Array<Deferred<void>> = [];
@@ -35,7 +42,18 @@ function fakes() {
   let reply: (messageId: string, text: string) => void = () => undefined;
   let ended: (ended: CallEnded) => void = () => undefined;
   const spoken: string[] = [];
+  let handlers: DictationHandlers | null = null;
+  const stopSpeaking = vi.fn(() => {
+    speeches[speeches.length - 1]?.resolve();
+  });
   const deps: CallDeps = {
+    dictate: async (next, signal) => {
+      signals.push(signal);
+      if (!opts.onDevice) return false;
+      handlers = next;
+      return true;
+    },
+    stopSpeaking,
     record: (signal) => {
       signals.push(signal);
       const next = deferred<CallClip | null>();
@@ -60,6 +78,9 @@ function fakes() {
   };
   return {
     deps,
+    stopSpeaking,
+    interim: (text: string) => handlers?.onInterim(text),
+    hear: (text: string) => handlers?.onFinal(text),
     recordings,
     signals,
     speeches,
@@ -77,9 +98,10 @@ function fakes() {
 afterEach(() => endCall());
 
 describe("mobile call session", () => {
-  it("starts listening for the bot on the call", () => {
+  it("starts listening for the bot on the call", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     expect(getSnapshot()).toMatchObject({ botId: "bot-1", botName: "Ada", phase: "listening" });
     expect(fake.recordings).toHaveLength(1);
   });
@@ -87,6 +109,7 @@ describe("mobile call session", () => {
   it("sends what it heard to the call's bot", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("how is the deploy going");
     await flush();
     expect(fake.send).toHaveBeenCalledWith(
@@ -100,6 +123,7 @@ describe("mobile call session", () => {
   it("tags every message in one call with the same call id", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("how is the deploy going");
     await flush();
     fake.replyWith("message-1", "It is green.");
@@ -117,6 +141,7 @@ describe("mobile call session", () => {
   it("speaks a reply, then listens again", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("status please");
     await flush();
     fake.replyWith("message-1", "It is green.");
@@ -134,6 +159,7 @@ describe("mobile call session", () => {
   it("stops recording while muted", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     toggleMute();
     await flush();
     expect(fake.signals[0]?.aborted).toBe(true);
@@ -144,6 +170,7 @@ describe("mobile call session", () => {
   it("hangs up once the bot has answered a goodbye", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("that's all, bye");
     await flush();
     expect(fake.send).toHaveBeenCalledWith(
@@ -162,6 +189,7 @@ describe("mobile call session", () => {
   it("speaks the farewell and hangs up when the bot ends the call itself", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("end the call and make me a list");
     await flush();
     fake.endedCall(callIdFromClientNonce(fake.send.mock.calls[0]?.[2]), "Talk soon.");
@@ -176,6 +204,7 @@ describe("mobile call session", () => {
   it("never speaks the work the bot files after it hung up", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("end the call and make me a list");
     await flush();
     fake.endedCall(callIdFromClientNonce(fake.send.mock.calls[0]?.[2]), "Talk soon.");
@@ -187,6 +216,7 @@ describe("mobile call session", () => {
   it("ignores a call ended event from another call", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("status please");
     await flush();
     fake.endedCall("someone-elses-call", "Talk soon.");
@@ -224,9 +254,10 @@ describe("mobile call session", () => {
     expect(getSnapshot()).toBeNull();
   });
 
-  it("aborts the bot feed on hang up", () => {
+  it("aborts the bot feed on hang up", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     endCall();
     expect(fake.unwatch).toHaveBeenCalledTimes(1);
     expect(getSnapshot()).toBeNull();
@@ -235,6 +266,7 @@ describe("mobile call session", () => {
   it("closes the call server-side when the caller presses hang up", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("status please");
     await flush();
     const callId = callIdFromClientNonce(fake.send.mock.calls[0]?.[2]);
@@ -247,6 +279,7 @@ describe("mobile call session", () => {
   it("closes the call server-side once when the caller says goodbye", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("that's all, bye");
     await flush();
     const callId = callIdFromClientNonce(fake.send.mock.calls[0]?.[2]);
@@ -262,6 +295,7 @@ describe("mobile call session", () => {
   it("does not close the call again when the bot ended it", async () => {
     const fake = fakes();
     startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    await flush();
     fake.say("end the call and make me a list");
     await flush();
     fake.endedCall(callIdFromClientNonce(fake.send.mock.calls[0]?.[2]), "Talk soon.");
@@ -270,5 +304,88 @@ describe("mobile call session", () => {
 
     expect(getSnapshot()).toBeNull();
     expect(fake.closeCall).not.toHaveBeenCalled();
+  });
+
+  it("drops the reply leaking back into the microphone", async () => {
+    const fake = fakes({ onDevice: true });
+    startCall({ botId: "bot-1", botName: "Ada", transcribe: false }, fake.deps);
+    await flush();
+    fake.hear("how is the deploy going");
+    await flush();
+    fake.replyWith("message-1", "The deploy is green and the tests pass.");
+    await flush();
+
+    fake.hear("the deploy is green and the tests pass");
+    await flush();
+
+    expect(fake.send).toHaveBeenCalledTimes(1);
+    expect(getSnapshot()?.exchanges).toEqual([
+      { role: "user", text: "how is the deploy going" },
+      { role: "bot", text: "The deploy is green and the tests pass." },
+    ]);
+  });
+
+  it("speaks each reply once", async () => {
+    const fake = fakes({ onDevice: true });
+    startCall({ botId: "bot-1", botName: "Ada", transcribe: false }, fake.deps);
+    await flush();
+    fake.hear("status please");
+    await flush();
+    fake.replyWith("message-1", "It is green.");
+    fake.replyWith("message-1", "It is green.");
+
+    expect(fake.spoken).toEqual(["It is green."]);
+  });
+});
+
+describe("mobile call session on a timer", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    endCall();
+    vi.useRealTimers();
+  });
+
+  const tick = (ms = 0) => vi.advanceTimersByTimeAsync(ms);
+
+  it("cuts the reply short when the caller talks over it, and still sends that turn", async () => {
+    const fake = fakes({ onDevice: true });
+    startCall({ botId: "bot-1", botName: "Ada", transcribe: false }, fake.deps);
+    await tick();
+    fake.hear("status please");
+    await tick();
+    fake.replyWith("message-1", "It is green.");
+    await tick();
+
+    fake.interim("actually hang on");
+    await tick(INTERIM_BARGE_IN_MS - 1);
+    expect(fake.stopSpeaking).not.toHaveBeenCalled();
+    await tick(1);
+    expect(fake.stopSpeaking).toHaveBeenCalled();
+    expect(getSnapshot()?.phase).toBe("listening");
+
+    fake.hear("actually hang on");
+    await tick();
+    expect(fake.send).toHaveBeenLastCalledWith(
+      "bot-1",
+      "actually hang on",
+      expect.stringMatching(/^call:/),
+    );
+  });
+
+  it("reconnects the call feed when the live stream ends", async () => {
+    const { rpc, subscribeThread } = await import("./api");
+    vi.mocked(rpc).mockResolvedValue({ cursor: 7, messages: [], run: null } as never);
+    vi.mocked(subscribeThread).mockResolvedValue(undefined as never);
+    const fake = fakes();
+    const { watch: _watch, ...deps } = fake.deps;
+    startCall({ botId: "bot-1", botName: "Ada" }, deps);
+    await tick();
+    expect(subscribeThread).toHaveBeenCalledTimes(1);
+
+    await tick(250);
+    expect(subscribeThread).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(subscribeThread).mock.calls[1]?.[1]).toBe(7);
+    vi.mocked(rpc).mockReset();
+    vi.mocked(subscribeThread).mockReset();
   });
 });
