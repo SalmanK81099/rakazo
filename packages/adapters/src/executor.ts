@@ -349,7 +349,7 @@ const READ_ONLY_AGENT_TOOLS = new Set([
 ]);
 /** Added to the turn prompt when the user spoke this message on a live voice call. */
 export const VOICE_CALL_INSTRUCTION =
-  "You are on a live voice call. Reply in one to three short spoken sentences. No markdown, lists, links, or option cards; do not use ask_user unless you truly cannot proceed. Answer directly from what you already know when you can; use tools or subagents only when the answer requires them. If the user asks to end the call or hang up, call end_call and say goodbye in the same reply; do any remaining work after that in chat.";
+  "You are on a live voice call. Reply in one to three short spoken sentences. No markdown, lists, links, or option cards; do not use ask_user unless you truly cannot proceed. Answer directly from what you already know when you can; use tools or subagents only when the answer requires them. If the user asks to end the call or hang up, or the conversation is finished, call end_call with a short title and a one-sentence farewell instead of saying goodbye in text, then do any remaining work as a normal chat reply.";
 const MAX_MODEL_FILE_BYTES = 250_000;
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
@@ -3058,6 +3058,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           }
           if (name === "end_call") {
+            const callId = callIdFromClientNonce(sourceClientNonce);
+            const title = String(args.title ?? "")
+              .trim()
+              .slice(0, 40);
+            const farewell = String(args.farewell ?? "")
+              .trim()
+              .slice(0, 160);
+            const marker = await publishMessage(deps, run, "bot", [
+              { kind: "voice_call", ...(callId ? { callId } : {}), title, farewell },
+            ]);
             await deps.events.append({
               spaceId: run.spaceId,
               threadId: thread.id,
@@ -3068,10 +3078,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 botId: bot.id,
                 threadId: thread.id,
                 runId: run.id,
-                callId: callIdFromClientNonce(sourceClientNonce),
+                callId,
+                title,
+                farewell,
+                messageId: marker.id,
               },
             });
-            return finish({ ok: "Call ended." });
+            return finish({
+              ok: "Call ended and your farewell was spoken. The user is now reading, not listening: finish any remaining work as a normal chat reply with full formatting.",
+            });
           }
           if (name === "list_secrets") return listBotSecrets(deps.prisma, run);
           if (name === "forget_secret") {

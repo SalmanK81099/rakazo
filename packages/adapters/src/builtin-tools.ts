@@ -732,8 +732,21 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "end_call",
     description:
-      "End the current voice call. Call this when the user asks to hang up or end the call, or the conversation is clearly finished. Say your goodbye in the same reply; you may keep working on any remaining task afterwards in chat.",
-    inputSchema: { type: "object", properties: {} },
+      "End the current voice call. Call this when the user asks to hang up or end the call, or the conversation is clearly finished. Your farewell is spoken as the call ends, so do not also say goodbye in text; finish any remaining work in chat afterwards.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: 'What the call was about, 2-5 words, e.g. "AI stack flow". Max 40 chars.',
+        },
+        farewell: {
+          type: "string",
+          description: "One short sentence spoken as you hang up. Max 160 chars.",
+        },
+      },
+      required: ["title", "farewell"],
+    },
   },
   {
     name: "skill_read",
