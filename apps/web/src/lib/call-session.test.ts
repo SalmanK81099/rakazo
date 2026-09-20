@@ -408,7 +408,10 @@ describe("call session", () => {
     await heard("book the flight");
 
     const callId = callIdFromClientNonce(String(send.mock.calls[0]?.[0]?.clientNonce));
-    const live = reduceThreadSnapshot(snapshot([]), userMessageEvent("run-1"));
+    expect(callId).toBeDefined();
+    // The event itself carries the call id, so the bubble groups with no run
+    // registered anywhere — note the event below has no runId at all.
+    const live = reduceThreadSnapshot(snapshot([]), userMessageEvent(String(callId)));
     expect(live?.messages[0]?.callId).toBe(callId);
     expect(groupVoiceChats(live?.messages ?? [])).toEqual([
       { kind: "voiceChat", callId, messages: live?.messages },
@@ -552,16 +555,15 @@ const runningRun = {
   createdAt: "2026-09-20T00:00:00.000Z",
 } as ThreadSnapshot["run"];
 
-function userMessageEvent(runId: string): ProductEvent {
+function userMessageEvent(callId: string): ProductEvent {
   return {
     id: "event-1",
     seq: 5,
     spaceId: "space-1",
     threadId: "thread-1",
     botId: "call-bot",
-    runId,
     type: "thread.message.created",
-    payload: { messageId: "message-user", role: "user", blocks: [] },
+    payload: { messageId: "message-user", role: "user", blocks: [], callId },
     createdAt: "2026-09-20T00:00:00.000Z",
   } as ProductEvent;
 }

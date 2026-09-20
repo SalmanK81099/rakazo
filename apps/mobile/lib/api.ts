@@ -755,6 +755,8 @@ export type MobileMessage = {
   seq?: number;
   runId?: string;
   role: "user" | "bot" | "system";
+  /** Set when the message was sent from a live voice call; groups one call's transcript. */
+  callId?: string;
   botId?: string;
   replyToMessageId?: string;
   replyQuote?: string;
@@ -1117,6 +1119,7 @@ export function applyMobileThreadEvent(
       id: String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`),
       runId: event.runId ? String(event.runId) : undefined,
       role: (event.payload?.role as MobileMessage["role"]) ?? "bot",
+      callId: typeof event.payload?.callId === "string" ? event.payload.callId : undefined,
       blocks: (event.payload?.blocks as MobileMessage["blocks"]) ?? [],
       botId: event.botId ?? (event.payload?.botId ? String(event.payload.botId) : undefined),
       replyToMessageId: event.payload?.replyToMessageId

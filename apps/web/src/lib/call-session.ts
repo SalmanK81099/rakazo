@@ -13,7 +13,7 @@ import { useSyncExternalStore } from "react";
 import { dictation } from "./dictation.js";
 import { spokenMemory } from "./echo.js";
 import { rpc } from "./rpc.js";
-import { isThreadSnapshotEvent, reduceThreadSnapshot, rememberCallRun } from "./thread-events.js";
+import { isThreadSnapshotEvent, reduceThreadSnapshot } from "./thread-events.js";
 import { speaker } from "./tts.js";
 
 export type CallPhase = "listening" | "thinking" | "speaking";
@@ -319,9 +319,7 @@ async function handleTranscript(text: string) {
     } else if (runActive(thread)) {
       await rpc.threads.followUp({ botId, text, clientNonce: callClientNonce(callId) });
     } else {
-      const sent = await rpc.threads.send({ botId, clientNonce: callClientNonce(callId), text });
-      // Live events omit the nonce, so tell the reducer which run carries this call.
-      rememberCallRun(sent.runId, callId);
+      await rpc.threads.send({ botId, clientNonce: callClientNonce(callId), text });
     }
     if (state?.botId !== botId) return;
     commit(await rpc.threads.get({ botId }, { signal: callFeed?.signal }));
