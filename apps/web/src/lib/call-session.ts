@@ -155,6 +155,13 @@ export function startCall(call: {
 }
 
 export function endCall(): void {
+  // A caller hang-up closes the call server-side, which files the marker and the wrap-up
+  // run. The bot's own end_call already did that, so only tell the server when it did not.
+  if (state && !botEndedCall) {
+    const { botId } = state;
+    // Fire and forget: the card is going away either way, and the server is idempotent.
+    void rpc.threads.endCall({ botId, callId }).catch(() => undefined);
+  }
   feed?.abort();
   feed = null;
   hangUpAfterReply = false;

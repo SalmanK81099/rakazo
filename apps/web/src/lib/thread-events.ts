@@ -26,6 +26,8 @@ const runTriggers = new Set<Run["trigger"]>([
   "routine",
   "resume",
   "follow_up",
+  "reaction",
+  "call_end",
   "spawn",
   "skill",
   "bot_message",

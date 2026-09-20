@@ -30,6 +30,7 @@ function fakes() {
   const signals: AbortSignal[] = [];
   const speeches: Array<Deferred<void>> = [];
   const send = vi.fn(async (_botId: string, _text: string, _clientNonce: string) => undefined);
+  const closeCall = vi.fn(async (_botId: string, _callId: string) => undefined);
   const unwatch = vi.fn();
   let reply: (messageId: string, text: string) => void = () => undefined;
   let ended: (ended: CallEnded) => void = () => undefined;
@@ -44,6 +45,7 @@ function fakes() {
     // The fake clip carries the words, so transcription is the identity.
     transcribe: async (clip) => clip.base64,
     send,
+    endCall: closeCall,
     speak: (_botId, text) => {
       spoken.push(text);
       const next = deferred<void>();
@@ -63,6 +65,7 @@ function fakes() {
     speeches,
     spoken,
     send,
+    closeCall,
     unwatch,
     say: (text: string) =>
       recordings[recordings.length - 1]?.resolve({ base64: text, mimeType: "audio/m4a" }),
@@ -227,5 +230,45 @@ describe("mobile call session", () => {
     endCall();
     expect(fake.unwatch).toHaveBeenCalledTimes(1);
     expect(getSnapshot()).toBeNull();
+  });
+
+  it("closes the call server-side when the caller presses hang up", async () => {
+    const fake = fakes();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    fake.say("status please");
+    await flush();
+    const callId = callIdFromClientNonce(fake.send.mock.calls[0]?.[2]);
+
+    endCall();
+
+    expect(fake.closeCall).toHaveBeenCalledWith("bot-1", callId);
+  });
+
+  it("closes the call server-side once when the caller says goodbye", async () => {
+    const fake = fakes();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    fake.say("that's all, bye");
+    await flush();
+    const callId = callIdFromClientNonce(fake.send.mock.calls[0]?.[2]);
+    fake.replyWith("message-1", "Talk soon.");
+    fake.speeches[0]?.resolve();
+    await flush();
+
+    expect(getSnapshot()).toBeNull();
+    expect(fake.closeCall).toHaveBeenCalledTimes(1);
+    expect(fake.closeCall).toHaveBeenCalledWith("bot-1", callId);
+  });
+
+  it("does not close the call again when the bot ended it", async () => {
+    const fake = fakes();
+    startCall({ botId: "bot-1", botName: "Ada" }, fake.deps);
+    fake.say("end the call and make me a list");
+    await flush();
+    fake.endedCall(callIdFromClientNonce(fake.send.mock.calls[0]?.[2]), "Talk soon.");
+    fake.speeches[0]?.resolve();
+    await flush();
+
+    expect(getSnapshot()).toBeNull();
+    expect(fake.closeCall).not.toHaveBeenCalled();
   });
 });

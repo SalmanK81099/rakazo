@@ -36,6 +36,8 @@ export type CallDeps = {
   record: (signal: AbortSignal) => Promise<CallClip | null>;
   transcribe: (clip: CallClip, signal: AbortSignal) => Promise<string>;
   send: (botId: string, text: string, clientNonce: string) => Promise<void>;
+  /** Tells the server the caller hung up, so it files the call marker and the wrap-up run. */
+  endCall: (botId: string, callId: string) => Promise<void>;
   speak: (botId: string, text: string) => Promise<void>;
   watch: (
     botId: string,
@@ -122,6 +124,9 @@ export function startCall(
 }
 
 export function endCall(): void {
+  // The bot's own end_call already closed the call server-side; only a caller hang-up
+  // has to say so. Fire and forget: the card is going away either way.
+  if (state && !botEndedCall) void deps.endCall(state.botId, callId).catch(() => undefined);
   turn?.abort();
   turn = null;
   unwatch?.();
@@ -248,6 +253,7 @@ function productionDeps(): CallDeps {
     record: recordClip,
     transcribe: transcribeClip,
     send: sendHeard,
+    endCall: closeCall,
     speak: speakReply,
     watch: watchReplies,
   };
@@ -322,6 +328,10 @@ async function transcribeClip(clip: CallClip, signal: AbortSignal): Promise<stri
 
 async function sendHeard(botId: string, text: string, clientNonce: string): Promise<void> {
   await rpc("threads/send", { botId, clientNonce, text });
+}
+
+async function closeCall(botId: string, id: string): Promise<void> {
+  await rpc("threads/endCall", { botId, callId: id });
 }
 
 async function speakReply(botId: string, text: string): Promise<void> {

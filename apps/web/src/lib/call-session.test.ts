@@ -46,6 +46,7 @@ vi.mock("./rpc.js", () => ({
   rpc: {
     threads: {
       answer: vi.fn(),
+      endCall: vi.fn(async () => ({ ok: true })),
       followUp: vi.fn(),
       get: vi.fn(),
       head: vi.fn(),
@@ -61,6 +62,7 @@ const isSpeaking = vi.mocked(speaker.isSpeaking);
 const send = vi.mocked(rpc.threads.send);
 const followUp = vi.mocked(rpc.threads.followUp);
 const getThread = vi.mocked(rpc.threads.get);
+const endCallRpc = vi.mocked(rpc.threads.endCall);
 
 describe("call session", () => {
   beforeEach(() => {
@@ -71,6 +73,7 @@ describe("call session", () => {
     listen.mockResolvedValue(undefined);
     getThread.mockResolvedValue(snapshot([]) as never);
     send.mockResolvedValue({ runId: "run-1", taskId: "task-1" } as never);
+    endCallRpc.mockResolvedValue({ ok: true } as never);
   });
 
   afterEach(() => {
@@ -312,6 +315,49 @@ describe("call session", () => {
     expect(feed?.signal.aborted).toBe(true);
     expect(getSnapshot()).toBeNull();
     expect(speaker.stop).toHaveBeenCalled();
+  });
+
+  it("closes the call server-side when the caller presses hang up", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await heard("book the flight");
+    const callId = String(callIdFromClientNonce(String(send.mock.calls[0]?.[0]?.clientNonce)));
+
+    endCall();
+
+    expect(endCallRpc).toHaveBeenCalledWith({ botId: "call-bot", callId });
+  });
+
+  it("closes the call server-side once when the caller says goodbye", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Talk soon")]) as never);
+    await heard("that's all, bye");
+    const callId = String(callIdFromClientNonce(String(send.mock.calls[0]?.[0]?.clientNonce)));
+
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "speaking", caption: "Talk soon" });
+    speech?.({ status: "idle" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
+
+    expect(getSnapshot()).toBeNull();
+    expect(endCallRpc).toHaveBeenCalledTimes(1);
+    expect(endCallRpc).toHaveBeenCalledWith({ botId: "call-bot", callId });
+  });
+
+  it("does not close the call again when the bot ended it", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const feed = vi.mocked(runThreadSubscription).mock.calls[0]?.[0];
+    getThread.mockResolvedValue(snapshot([], runningRun) as never);
+    await heard("end the call and make me a list");
+    const callId = String(callIdFromClientNonce(String(send.mock.calls[0]?.[0]?.clientNonce)));
+
+    feed?.onEvent?.(callEndedEvent(callId), { threadId: "thread-1", cursor: 3 });
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "speaking", caption: "Talk soon" });
+    speech?.({ status: "idle" });
+    await vi.advanceTimersByTimeAsync(ECHO_GUARD_MS);
+
+    expect(getSnapshot()).toBeNull();
+    expect(endCallRpc).not.toHaveBeenCalled();
   });
 
   it("tears the previous call down before opening the next call's feed", async () => {
