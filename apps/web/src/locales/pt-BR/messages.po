@@ -3858,3 +3858,180 @@ msgstr "O seu nome"
 #: src/pages/Welcome.tsx:21
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Sua equipe de agentes sempre ativos<0/>, a quem você pode dar trabalho de verdade."
+
+#: src/pages/shell/message-cards.tsx:137
+msgid "A bit of everything"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:283
+msgid "All bots"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:277
+msgid "All time"
+msgstr ""
+
+#: src/components/AppRail.tsx:20
+#: src/pages/Artifacts.tsx:218
+msgid "Artifacts"
+msgstr ""
+
+#: src/components/AppRail.tsx:17
+msgid "Bots"
+msgstr ""
+
+#: src/pages/CallView.tsx:241
+msgid "Call"
+msgstr "Ligar"
+
+#: src/pages/Artifacts.tsx:238
+msgid "Card view"
+msgstr ""
+
+#: src/pages/PluginsOverlay.tsx:741
+msgid "Configure a plugin catalog on the server to connect apps."
+msgstr ""
+
+#: src/pages/Artifacts.tsx:205
+msgid "Could not delete this artifact."
+msgstr ""
+
+#: src/pages/Artifacts.tsx:121
+msgid "Could not load artifacts."
+msgstr ""
+
+#: src/pages/Artifacts.tsx:846
+msgid "Could not load this artifact."
+msgstr ""
+
+#: src/pages/shell/message-cards.tsx:131
+msgid "Day-to-day work"
+msgstr ""
+
+#. placeholder {0}: pendingDelete.name
+#: src/pages/Artifacts.tsx:344
+msgid "Delete \"{0}\"?"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:892
+msgid "Download"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:272
+msgid "Filter by date"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:232
+msgid "Filters"
+msgstr ""
+
+#: src/pages/shell/message-cards.tsx:133
+msgid "Inbox & email"
+msgstr ""
+
+#: src/pages/CallView.tsx:260
+msgid "Interrupt"
+msgstr "Interromper"
+
+#: src/pages/Artifacts.tsx:927
+msgid "Isolated preview — no access to your account"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:245
+msgid "List view"
+msgstr ""
+
+#: src/pages/CallView.tsx:247
+msgid "Listening…"
+msgstr "Ouvindo..."
+
+#: src/pages/Artifacts.tsx:447
+msgid "Load more"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:896
+#: src/pages/Artifacts.tsx:897
+msgid "Maximize"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:467
+msgid "No artifacts found."
+msgstr ""
+
+#: src/pages/Artifacts.tsx:478
+msgid "No matching artifacts on this page."
+msgstr ""
+
+#: src/pages/Artifacts.tsx:961
+msgid "Preview isn't available for this file type — download it to view it."
+msgstr ""
+
+#: src/pages/shell/message-cards.tsx:135
+msgid "Research & writing"
+msgstr ""
+
+#: src/pages/CallView.tsx:255
+msgid "Say something. Silence sends it."
+msgstr "Diga alguma coisa. O silêncio manda."
+
+#: src/pages/Artifacts.tsx:267
+msgid "Search artifacts…"
+msgstr ""
+
+#: src/components/AppRail.tsx:14
+msgid "Sections"
+msgstr ""
+
+#: src/pages/memory-providers/SerenitySettingsForm.tsx:52
+msgid "Serenity endpoint is required."
+msgstr ""
+
+#: src/pages/Artifacts.tsx:896
+#: src/pages/Artifacts.tsx:897
+msgid "Show list"
+msgstr ""
+
+#: src/pages/CallView.tsx:267
+msgid "Space interrupts · Esc hangs up"
+msgstr "Interrupções de espaço · Esc desliga"
+
+#: src/pages/CallView.tsx:249
+msgid "Speaking…"
+msgstr "Falando…"
+
+#: src/pages/AccountSettingsOverlay.tsx:201
+msgid "Stream replies"
+msgstr "Transmitir respostas"
+
+#: src/pages/Artifacts.tsx:353
+msgid "This can't be undone."
+msgstr ""
+
+#. placeholder {0}: pendingDelete.versionCount
+#: src/pages/Artifacts.tsx:348
+msgid "This deletes all {0} versions of this artifact. This can't be undone."
+msgstr ""
+
+#: src/components/ArtifactFileCard.tsx:143
+msgid "This file is not valid UTF-8 text."
+msgstr ""
+
+#: src/pages/Artifacts.tsx:280
+msgid "This month"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:279
+msgid "This week"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:278
+msgid "Today"
+msgstr ""
+
+#: src/pages/Artifacts.tsx:870
+msgid "Version"
+msgstr ""
+
+#: src/pages/shell/message-cards.tsx:114
+msgid "What do you want me on first?"
+msgstr ""

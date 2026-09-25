@@ -3858,3 +3858,180 @@ msgstr "Your name"
 #: src/pages/Welcome.tsx:21
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Your team of always-on agents<0/>that you can give real work to."
+
+#: src/pages/shell/message-cards.tsx:137
+msgid "A bit of everything"
+msgstr "A bit of everything"
+
+#: src/pages/Artifacts.tsx:283
+msgid "All bots"
+msgstr "All bots"
+
+#: src/pages/Artifacts.tsx:277
+msgid "All time"
+msgstr "All time"
+
+#: src/components/AppRail.tsx:20
+#: src/pages/Artifacts.tsx:218
+msgid "Artifacts"
+msgstr "Artifacts"
+
+#: src/components/AppRail.tsx:17
+msgid "Bots"
+msgstr "Bots"
+
+#: src/pages/CallView.tsx:241
+msgid "Call"
+msgstr "Call"
+
+#: src/pages/Artifacts.tsx:238
+msgid "Card view"
+msgstr "Card view"
+
+#: src/pages/PluginsOverlay.tsx:741
+msgid "Configure a plugin catalog on the server to connect apps."
+msgstr "Configure a plugin catalog on the server to connect apps."
+
+#: src/pages/Artifacts.tsx:205
+msgid "Could not delete this artifact."
+msgstr "Could not delete this artifact."
+
+#: src/pages/Artifacts.tsx:121
+msgid "Could not load artifacts."
+msgstr "Could not load artifacts."
+
+#: src/pages/Artifacts.tsx:846
+msgid "Could not load this artifact."
+msgstr "Could not load this artifact."
+
+#: src/pages/shell/message-cards.tsx:131
+msgid "Day-to-day work"
+msgstr "Day-to-day work"
+
+#. placeholder {0}: pendingDelete.name
+#: src/pages/Artifacts.tsx:344
+msgid "Delete \"{0}\"?"
+msgstr "Delete \"{0}\"?"
+
+#: src/pages/Artifacts.tsx:892
+msgid "Download"
+msgstr "Download"
+
+#: src/pages/Artifacts.tsx:272
+msgid "Filter by date"
+msgstr "Filter by date"
+
+#: src/pages/Artifacts.tsx:232
+msgid "Filters"
+msgstr "Filters"
+
+#: src/pages/shell/message-cards.tsx:133
+msgid "Inbox & email"
+msgstr "Inbox & email"
+
+#: src/pages/CallView.tsx:260
+msgid "Interrupt"
+msgstr "Interrupt"
+
+#: src/pages/Artifacts.tsx:927
+msgid "Isolated preview — no access to your account"
+msgstr "Isolated preview — no access to your account"
+
+#: src/pages/Artifacts.tsx:245
+msgid "List view"
+msgstr "List view"
+
+#: src/pages/CallView.tsx:247
+msgid "Listening…"
+msgstr "Listening…"
+
+#: src/pages/Artifacts.tsx:447
+msgid "Load more"
+msgstr "Load more"
+
+#: src/pages/Artifacts.tsx:896
+#: src/pages/Artifacts.tsx:897
+msgid "Maximize"
+msgstr "Maximize"
+
+#: src/pages/Artifacts.tsx:467
+msgid "No artifacts found."
+msgstr "No artifacts found."
+
+#: src/pages/Artifacts.tsx:478
+msgid "No matching artifacts on this page."
+msgstr "No matching artifacts on this page."
+
+#: src/pages/Artifacts.tsx:961
+msgid "Preview isn't available for this file type — download it to view it."
+msgstr "Preview isn't available for this file type — download it to view it."
+
+#: src/pages/shell/message-cards.tsx:135
+msgid "Research & writing"
+msgstr "Research & writing"
+
+#: src/pages/CallView.tsx:255
+msgid "Say something. Silence sends it."
+msgstr "Say something. Silence sends it."
+
+#: src/pages/Artifacts.tsx:267
+msgid "Search artifacts…"
+msgstr "Search artifacts…"
+
+#: src/components/AppRail.tsx:14
+msgid "Sections"
+msgstr "Sections"
+
+#: src/pages/memory-providers/SerenitySettingsForm.tsx:52
+msgid "Serenity endpoint is required."
+msgstr "Serenity endpoint is required."
+
+#: src/pages/Artifacts.tsx:896
+#: src/pages/Artifacts.tsx:897
+msgid "Show list"
+msgstr "Show list"
+
+#: src/pages/CallView.tsx:267
+msgid "Space interrupts · Esc hangs up"
+msgstr "Space interrupts · Esc hangs up"
+
+#: src/pages/CallView.tsx:249
+msgid "Speaking…"
+msgstr "Speaking…"
+
+#: src/pages/AccountSettingsOverlay.tsx:201
+msgid "Stream replies"
+msgstr "Stream replies"
+
+#: src/pages/Artifacts.tsx:353
+msgid "This can't be undone."
+msgstr "This can't be undone."
+
+#. placeholder {0}: pendingDelete.versionCount
+#: src/pages/Artifacts.tsx:348
+msgid "This deletes all {0} versions of this artifact. This can't be undone."
+msgstr "This deletes all {0} versions of this artifact. This can't be undone."
+
+#: src/components/ArtifactFileCard.tsx:143
+msgid "This file is not valid UTF-8 text."
+msgstr "This file is not valid UTF-8 text."
+
+#: src/pages/Artifacts.tsx:280
+msgid "This month"
+msgstr "This month"
+
+#: src/pages/Artifacts.tsx:279
+msgid "This week"
+msgstr "This week"
+
+#: src/pages/Artifacts.tsx:278
+msgid "Today"
+msgstr "Today"
+
+#: src/pages/Artifacts.tsx:870
+msgid "Version"
+msgstr "Version"
+
+#: src/pages/shell/message-cards.tsx:114
+msgid "What do you want me on first?"
+msgstr "What do you want me on first?"
