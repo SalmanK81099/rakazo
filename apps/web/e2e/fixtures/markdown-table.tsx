@@ -12,6 +12,9 @@ const long = params.has("long");
 const nested = params.has("nested");
 const streaming = params.has("stream");
 const tall = params.has("tall");
+const rtl = params.has("rtl");
+const wide = params.has("wide");
+const dupCols = params.has("dup-cols");
 
 const rows = Array.from(
   { length: rowCount },
@@ -33,7 +36,17 @@ const initialMarkdown = rich
       ].join("\n")
     : long
       ? `| Item | Description |\n| --- | --- |\n| Alpha | ${longValue} |`
-      : ["| Item | Qty |", "| --- | --- |", ...rows].join("\n");
+      : rtl
+        ? ["| שם | כמות |", "| --- | ---: |", "| תפוח | 5 |", "| בננה | 3 |"].join("\n")
+        : wide
+          ? [
+              `| ${Array.from({ length: 12 }, (_, i) => `Column ${i + 1}`).join(" | ")} |`,
+              `| ${"--- | ".repeat(12)}`,
+              `| ${Array.from({ length: 12 }, (_, i) => `value-${i + 1} padded to force overflow`).join(" | ")} |`,
+            ].join("\n")
+          : dupCols
+            ? "|  | Qty | Qty |\n| --- | --- | --- |\n| a | 1 | 2 |"
+            : ["| Item | Qty |", "| --- | --- |", ...rows].join("\n");
 
 function Fixture() {
   const [markdown, setMarkdown] = useState(initialMarkdown);
@@ -54,7 +67,7 @@ function Fixture() {
       style={nested ? { minHeight: "auto", padding: 0 } : undefined}
     >
       {tall ? <div aria-hidden="true" style={{ height: "900px" }} /> : null}
-      <div data-testid="table-fixture" style={{ maxWidth: "40rem" }}>
+      <div data-testid="table-fixture" dir={rtl ? "auto" : undefined} style={{ maxWidth: "40rem" }}>
         <ChatMarkdown streaming={streaming}>{markdown}</ChatMarkdown>
       </div>
       {tall ? <div aria-hidden="true" style={{ height: "900px" }} /> : null}

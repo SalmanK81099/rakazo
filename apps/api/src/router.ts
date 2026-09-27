@@ -54,10 +54,12 @@ import {
   isComputerScreenUnavailable,
   isSandboxGoneError,
   isScratchpadStatus,
+  listAvailablePiCatalog,
   listPiCatalog,
   listScratchpadItems,
   McpOAuthBroker,
   mapScratchpadItem,
+  modelCredentialAuthKindsForSpace,
   modelCredentialDto,
   pickReusableConnection,
   planLiveConnectionSync,
@@ -66,6 +68,7 @@ import {
   probeOpenAiCompatibleModels,
   provisionComputer,
   queueComputerUpdate,
+  readStoredModelAuth,
   releaseComputerExecutionLease,
   replaceComputer,
   resolveAutoReviewChecker,
@@ -76,10 +79,14 @@ import {
   scheduleComputerSleep,
   screenLeaseIdForRun,
   scriptedCatalogEntry,
+  selectDefaultCredentialId,
   serializeModelSecret,
   takeoverLeaseMs,
   toComputerRef,
   touchRunningComputer,
+  UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
+  validateModelAuthAvailability,
+  validateStoredModelAuth,
   verifyMcpInstall,
 } from "@rakazo/adapters";
 import type { Auth } from "@rakazo/auth";
@@ -123,6 +130,7 @@ import {
   createRepos,
   createSpaceForMember,
   createThreadMessageInTransaction,
+  defaultModelCredentialCandidates,
   deleteEmptySpaceForMember,
   deleteUnreferencedCredentialSecret,
   findDefaultModelCredential,
@@ -871,7 +879,14 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     models: {
-      list: authed.models.list.handler(async () => [...listPiCatalog(), scriptedCatalogEntry]),
+      list: authed.models.list.handler(async ({ context }) => {
+        const auth = await modelCredentialAuthKindsForSpace(
+          deps.prisma,
+          deps.secrets,
+          context.actor,
+        );
+        return [...listAvailablePiCatalog(auth.byProvider, auth.byModel), scriptedCatalogEntry];
+      }),
       credentials: authed.models.credentials.handler(async ({ context }) => {
         const rows = await deps.prisma.userModelCredential.findMany({
           where: { userId: context.actor.userId },
@@ -1016,16 +1031,68 @@ export function createRouter(deps: RouterDeps) {
         await withSerializableRetry(() =>
           deps.prisma.$transaction(
             async (tx) => {
-              const credential = await tx.userModelCredential.findFirst({
-                where: { userId: context.actor.userId, provider: input.provider },
-                orderBy: newestModelCredentialOrder,
+              const [preferences, credentials] = await Promise.all([
+                tx.spaceModelPreference.findMany({
+                  where: {
+                    spaceId: context.actor.spaceId,
+                    userId: context.actor.userId,
+                    credential: { provider: input.provider },
+                  },
+                  include: { credential: true },
+                }),
+                tx.userModelCredential.findMany({
+                  where: { userId: context.actor.userId, provider: input.provider },
+                }),
+              ]);
+              const candidates = defaultModelCredentialCandidates({
+                provider: input.provider,
+                modelId: input.modelId,
+                preferences,
+                credentials,
               });
-              if (!credential) {
+              if (candidates.length === 0) {
                 throw new ORPCError("NOT_FOUND", {
                   message: `No model credential is connected for ${input.provider}.`,
                 });
               }
-              await selectSpaceModelPreference(tx, context.actor, credential.id, input.modelId);
+              const savedModelId = new Map(
+                preferences.map((preference) => [preference.credential.id, preference.modelId]),
+              );
+              const readyIds: string[] = [];
+              let authFailure: string | undefined;
+              let sawReadable = false;
+              for (const candidate of candidates) {
+                const auth = await readStoredModelAuth(
+                  tx,
+                  deps.secrets,
+                  context.actor.userId,
+                  candidate.secretId,
+                  input.provider,
+                  input.modelId,
+                );
+                if (auth.status === "unreadable") continue;
+                sawReadable = true;
+                if (auth.status === "rejected") {
+                  authFailure ??= auth.message;
+                  continue;
+                }
+                readyIds.push(candidate.id);
+              }
+              const chosenId = selectDefaultCredentialId({
+                provider: input.provider,
+                modelId: input.modelId,
+                orderedIds: candidates.map((candidate) => candidate.id),
+                readyIds,
+                savedModelId: (credentialId) => savedModelId.get(credentialId),
+              });
+              const fallbackId = !sawReadable ? candidates[0]?.id : undefined;
+              const credentialId = chosenId ?? fallbackId;
+              if (!credentialId) {
+                throw new ORPCError("BAD_REQUEST", {
+                  message: authFailure ?? UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
+                });
+              }
+              await selectSpaceModelPreference(tx, context.actor, credentialId, input.modelId);
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
           ),
@@ -1111,11 +1178,19 @@ export function createRouter(deps: RouterDeps) {
           });
           if (!section) throw new IsolationError();
         }
-        if (input.modelProvider && input.modelId) {
+        // Web settings resend the saved model on every save. Reject an
+        // incompatible override only when this request is changing it; a run
+        // still rejects a Spark model the subscription sign-in cannot call.
+        const settingModel =
+          input.modelProvider !== undefined &&
+          input.modelId !== undefined &&
+          (input.modelProvider !== existing.modelProvider || input.modelId !== existing.modelId);
+        if (settingModel && input.modelProvider && input.modelId) {
           const credential = await findModelCredential(
             deps.prisma,
             context.actor,
             input.modelProvider,
+            input.modelId,
           );
           if (!credential) {
             throw new ORPCError("BAD_REQUEST", { message: "Connect that model provider first" });
@@ -1126,6 +1201,17 @@ export function createRouter(deps: RouterDeps) {
           );
           if (!inCatalog && credential.defaultModel !== input.modelId) {
             throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider" });
+          }
+          if (inCatalog) {
+            const authError = await validateStoredModelAuth(
+              deps.prisma,
+              deps.secrets,
+              context.actor.userId,
+              credential.secretId,
+              input.modelProvider,
+              input.modelId,
+            );
+            if (authError) throw new ORPCError("BAD_REQUEST", { message: authError });
           }
         }
         const thinkingLevel = input.thinkingLevel;
@@ -1439,19 +1525,17 @@ export function createRouter(deps: RouterDeps) {
         );
         await Promise.all(
           archived.computers.map(async (computer) => {
-            if (!computer.providerRef || !computer.executionBotId || !computer.executionRunId) {
-              return;
-            }
+            if (!computer.providerRef) return;
             const adapterContext = {
               operationId: "stop",
               traceId: "stop",
               spaceId: context.actor.spaceId,
               userId: context.actor.userId,
-              botId: computer.executionBotId,
-              runId: computer.executionRunId,
+              botId: computer.botId,
+              runId: computer.runId,
               screenLeaseId: screenLeaseIdForRun(
-                { runId: computer.executionRunId, fence: computer.executionFence },
-                computer.executionRunId,
+                { runId: computer.runId, fence: computer.fence },
+                computer.runId,
               ),
               cancelRunWork: true,
               signal: new AbortController().signal,
@@ -1461,12 +1545,15 @@ export function createRouter(deps: RouterDeps) {
               deps.sandbox,
               ref,
               computer.id,
-              computer.executionRunId,
+              computer.runId,
               adapterContext,
             );
             await deps.sandbox.releaseScreen?.(ref, adapterContext).catch(() => undefined);
           }),
         );
+        // Expire the leases only after teardown: while they were live, no other run could claim
+        // these screens.
+        await groupRepos.releaseArchivedRunLeases(archived.cancelledRunIds);
         return { ok: true as const };
       }),
       restore: authed.groups.restore.handler(async ({ context, input }) => {
@@ -5390,6 +5477,11 @@ async function persistModelCredential(
   },
 ) {
   throwIfAborted(input.signal);
+  const requestedModelId = usableModelId(input.modelId);
+  const authError = requestedModelId
+    ? validateModelAuthAvailability(input.provider, requestedModelId, input.plaintext)
+    : undefined;
+  if (authError) throw new ORPCError("BAD_REQUEST", { message: authError });
   const stored = await deps.secrets.put(input.plaintext, {
     operationId: "cred",
     traceId: "cred",
@@ -5439,8 +5531,8 @@ async function persistModelCredential(
             });
         throwIfAborted(input.signal);
         const defaultModel =
-          usableModelId(input.modelId) ??
-          defaultCatalogModelId(input.provider) ??
+          requestedModelId ??
+          defaultCatalogModelId(input.provider, input.plaintext) ??
           usableModelId(deps.env.defaultModel);
         await selectSpaceModelPreference(tx, actor, credential.id, defaultModel);
         throwIfAborted(input.signal);

@@ -24,6 +24,7 @@ import {
   isSecretAskBlock,
   latestAnswerableAskMessageId,
   mentionChipKey,
+  plainTextFromMarkdown,
   projectMessageReactions,
   resolveComposerSendPlan,
   SLASH_ACTIONS,
@@ -2380,7 +2381,11 @@ function previewMessageText(message: MobileMessage): string {
           `${messagingProviderLabel(block.provider, block.transport)} · ${block.fromLabel}: ${block.text}`,
         ];
       }
-      return block.kind === "text" && block.text ? [block.text] : [];
+      if (block.kind === "text" && block.text) {
+        // Bot text is Markdown; user text is already plain.
+        return [message.role === "bot" ? plainTextFromMarkdown(block.text) : block.text];
+      }
+      return [];
     })
     .join(" ")
     .trim();

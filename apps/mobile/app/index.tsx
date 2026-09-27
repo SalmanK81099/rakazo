@@ -116,6 +116,15 @@ export default function Home() {
   });
   const [spaceBusy, setSpaceBusy] = useState(false);
   const [spaceRecoveryId, setSpaceRecoveryId] = useState<string | null>(null);
+  const [collapsedRosterParents, setCollapsedRosterParents] = useState(() => new Set<string>());
+  const toggleRosterParent = useCallback((botId: string) => {
+    setCollapsedRosterParents((previous) => {
+      const next = new Set(previous);
+      if (next.has(botId)) next.delete(botId);
+      else next.add(botId);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     void loadActivityMode().then(setActivityMode);
@@ -299,8 +308,19 @@ export default function Home() {
               },
             ]
           : [];
-    return spaceInboxItems(sidebarSpaces);
-  }, [botSections, locale, me, spaces, query, searching, searchHits, visible, visibleGroups]);
+    return spaceInboxItems(sidebarSpaces, collapsedRosterParents);
+  }, [
+    botSections,
+    collapsedRosterParents,
+    locale,
+    me,
+    spaces,
+    query,
+    searching,
+    searchHits,
+    visible,
+    visibleGroups,
+  ]);
   const initials = userInitials(me?.name ?? "");
   const organizeChat = organizeTarget
     ? organizeTarget.kind === "bot"
@@ -632,6 +652,10 @@ export default function Home() {
           ) : (
             <BotRow
               bot={item.bot}
+              depth={item.depth}
+              hasChildren={item.hasChildren}
+              collapsed={collapsedRosterParents.has(item.bot.id)}
+              onToggleChildren={() => toggleRosterParent(item.bot.id)}
               onPress={() => {
                 if (spaceActionRef.current.busy || spaceActionRef.current.recoveryId) return;
                 void openMobileSpace(item.bot.spaceId, () =>
@@ -781,6 +805,10 @@ function ConversationRow({
   indicator,
   tag,
   unread,
+  depth = 0,
+  hasChildren = false,
+  collapsed = false,
+  onToggleChildren,
   onPress,
   onLongPress,
   accessibilityLabel,
@@ -793,21 +821,56 @@ function ConversationRow({
   indicator?: ReactNode;
   tag?: string | null;
   unread?: boolean;
+  depth?: number;
+  hasChildren?: boolean;
+  collapsed?: boolean;
+  onToggleChildren?: () => void;
   onPress: () => void;
   onLongPress?: () => void;
   accessibilityLabel: string;
   accessibilityHint?: string;
 }) {
   const styles = useThemedStyles(createHomeStyles);
+  const { t } = useI18n();
+  const toggleLabel = collapsed
+    ? t("Expand {name}", { name: title })
+    : t("Collapse {name}", { name: title });
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityHint={accessibilityHint}
+      // Screen readers treat the row as one element, so the chevron is offered as a row action.
+      accessibilityState={hasChildren ? { expanded: !collapsed } : undefined}
+      accessibilityActions={
+        hasChildren ? [{ name: "toggleChildren", label: toggleLabel }] : undefined
+      }
+      onAccessibilityAction={(event) => {
+        if (event.nativeEvent.actionName === "toggleChildren") onToggleChildren?.();
+      }}
       onPress={onPress}
       onLongPress={onLongPress}
-      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+      style={({ pressed }) => [
+        styles.row,
+        depth > 0 ? { paddingInlineStart: 16 + depth * 16 } : null,
+        pressed && styles.rowPressed,
+      ]}
     >
+      {hasChildren ? (
+        <Pressable
+          accessible={false}
+          importantForAccessibility="no"
+          hitSlop={8}
+          onPress={onToggleChildren}
+          style={styles.treeToggle}
+        >
+          <NativeSymbol
+            ios={collapsed ? "chevron.right" : "chevron.down"}
+            android={collapsed ? "chevron-forward" : "chevron-down"}
+            size={14}
+          />
+        </Pressable>
+      ) : null}
       {avatar}
       <View style={styles.rowBody}>
         <View style={styles.rowTop}>
@@ -892,10 +955,18 @@ function SearchRow({ hit, onPress }: { hit: SearchHit; onPress: () => void }) {
 
 function BotRow({
   bot,
+  depth = 0,
+  hasChildren = false,
+  collapsed = false,
+  onToggleChildren,
   onPress,
   onLongPress,
 }: {
   bot: MobileBot | SpaceBot;
+  depth?: number;
+  hasChildren?: boolean;
+  collapsed?: boolean;
+  onToggleChildren?: () => void;
   onPress: () => void;
   onLongPress?: () => void;
 }) {
@@ -927,6 +998,10 @@ function BotRow({
       time={time}
       tag={tag}
       unread={bot.unread}
+      depth={depth}
+      hasChildren={hasChildren}
+      collapsed={collapsed}
+      onToggleChildren={onToggleChildren}
       accessibilityLabel={label}
       accessibilityHint={
         onLongPress ? t("Long press to pin, move, or silence notifications") : undefined
@@ -1054,6 +1129,13 @@ function createHomeStyles() {
       paddingHorizontal: 16,
       paddingVertical: 10,
       gap: 12,
+    },
+    treeToggle: {
+      width: 20,
+      height: 20,
+      alignItems: "center",
+      justifyContent: "center",
+      marginRight: -4,
     },
     rowPressed: {
       opacity: 0.55,

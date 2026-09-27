@@ -109,6 +109,8 @@ export const RU_MESSAGES: Record<string, string> = {
   Archive: "Архивировать",
   "Archive keeps everything and can be undone. Delete is permanent.":
     "Архивирование сохраняет всё и обратимо. Удаление необратимо.",
+  "Collapse {name}": "Свернуть {name}",
+  "Expand {name}": "Развернуть {name}",
   "Archived bots": "Архивированные боты",
   "Archived. Chat, memory, and files kept.": "В архиве. Чат, память и файлы сохраняются.",
   Asleep: "Спит",

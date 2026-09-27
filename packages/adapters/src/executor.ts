@@ -44,6 +44,7 @@ import {
   appendToolCallSegment,
   applyJudgeDecision,
   assertTransition,
+  blocksToAgentHistoryText,
   botMessageAllowsSilence,
   CALL_CLIENT_NONCE_PREFIX,
   callIdFromClientNonce,
@@ -76,7 +77,7 @@ import {
   toolRequiresExplicitApproval,
   truncatedPlainText,
   unattendedTriggerToolRequiresApproval,
-  userTurnBlocksForRun,
+  userTurnMessageForRun,
 } from "@rakazo/core";
 import {
   approvalEffectKey,
@@ -234,7 +235,9 @@ import { selectMemoryTools } from "./memory-tools.js";
 import {
   isCatalogModelChoice,
   selectConfiguredModel,
+  UnavailableModelForAuthError,
   validateConnectedModelChoice,
+  validateModelAuthAvailability,
 } from "./model-selection.js";
 import {
   filterImageReturningComputerTools,
@@ -1355,17 +1358,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
           role,
           content,
         }));
-        const turnBlocks = userTurnBlocksForRun(
+        const historyMessages = messages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          runId: message.runId,
+          blocks: message.blocks as MessageBlock[],
+        }));
+        const currentTurnMessage = userTurnMessageForRun(
           run.trigger,
           runId,
-          messages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            runId: message.runId,
-            blocks: message.blocks as MessageBlock[],
-          })),
+          historyMessages,
           run.sourceMessageId,
         );
+        const turnBlocks = currentTurnMessage?.blocks;
         const allowSilentPeerMessage = botMessageAllowsSilence(
           peerMessage?.intent,
           peerMessage?.repliesToRequest,
@@ -1443,7 +1448,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const { credential, thinkingLevel } = selected;
         const runModelProvider = selected.provider ?? runtimeFallback?.provider;
         const runModelId = selected.id ?? runtimeFallback?.id;
-        if (!runModelProvider || !runModelId) {
+        const failRunBeforeModel = async (message: string) => {
           const failed = await deps.events.finalizeRun({
             spaceId: run.spaceId,
             threadId: thread.id,
@@ -1454,7 +1459,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseOwner: workerId,
             leaseFence: fence,
             outcome: "failed",
-            error: MISSING_MODEL_MESSAGE,
+            error: message,
           });
           if (!failed) return;
           if (failed.continuationRunId) {
@@ -1467,7 +1472,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               deps,
               { ...run, sourceMessageId: run.sourceMessageId },
               { id: bot.id, name: bot.name },
-              `Could not complete the delegated request: ${MISSING_MODEL_MESSAGE}`,
+              `Could not complete the delegated request: ${message}`,
               "status",
             ).catch((error) => getLogger().error("bot message failure return", error));
           }
@@ -1475,22 +1480,34 @@ export function createRunExecutor(deps: ExecutorDeps) {
             await notifyRun(deps, run, {
               kind: "failure",
               title: `${bot.name} failed`,
-              body: MISSING_MODEL_MESSAGE,
+              body: message,
               botId: bot.id,
               threadId: thread.id,
             });
           }
+        };
+        if (!runModelProvider || !runModelId) {
+          await failRunBeforeModel(MISSING_MODEL_MESSAGE);
           return;
         }
-        const resolved = await resolveModelKey(
-          deps,
-          run.userId,
-          run.spaceId,
-          credential,
-          runModelProvider,
-          runModelId,
-          (values) => runSecrets.push(...values),
-        );
+        // An incompatible saved model is a configuration error. Record it on the run.
+        // Leaving it for the setup catch would retry and replace the message.
+        let resolved: Awaited<ReturnType<typeof resolveModelKey>>;
+        try {
+          resolved = await resolveModelKey(
+            deps,
+            run.userId,
+            run.spaceId,
+            credential,
+            runModelProvider,
+            runModelId,
+            (values) => runSecrets.push(...values),
+          );
+        } catch (error) {
+          if (!(error instanceof UnavailableModelForAuthError)) throw error;
+          await failRunBeforeModel(error.message);
+          return;
+        }
         runSecrets.push(...resolved.redact);
         await deps.prisma.run.updateMany({
           where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
@@ -1529,9 +1546,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Gate on the model this run will actually call — the pair written to the run row
         // above. Deriving it a second time here dropped the deployment fallback, so a
         // vision-capable default was gated as "scripted" and lost its screenshot tools.
-        const acceptsImages =
-          deps.runtime.describe().capabilities.scripted ||
-          modelAcceptsImageInput(runModelProvider, runModelId, resolved.acceptsImages);
+        const modelSeesImages = modelAcceptsImageInput(
+          runModelProvider,
+          runModelId,
+          resolved.acceptsImages,
+        );
+        const acceptsImages = deps.runtime.describe().capabilities.scripted || modelSeesImages;
         const groupContext = thread.groupId
           ? await loadGroupContext(deps.prisma, thread.groupId, { id: bot.id, name: bot.name })
           : undefined;
@@ -3769,7 +3789,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             content: redactSecrets(recalledMemory, runSecrets),
           });
         }
-        const runtimeHistory = [...historicalContext, ...history];
+        const modelImageBudget =
+          resolved.maxImagesPerPrompt === undefined
+            ? undefined
+            : Math.max(0, resolved.maxImagesPerPrompt - (currentTurnImages?.length ?? 0));
+        // A text-only model keeps the [image:] marker. Putting image parts in
+        // history makes the provider reject a follow-up that used to be text.
+        const historyWithImages = modelSeesImages
+          ? await withRecentTurnImages(deps, history, historyMessages, context, {
+              skipMessageId: currentTurnMessage?.id,
+              maxImages: modelImageBudget,
+            })
+          : history;
+        const runtimeHistory = [...historicalContext, ...historyWithImages];
         // Without a roster a bot only knows the bots it spawned itself.
         const botDirectory = thread.groupId
           ? undefined
@@ -4800,7 +4832,7 @@ export function threadContextForRun<T>(
   messagingChannelRun: boolean,
 ) {
   // Routine runs stay isolated from thread history. The creation intro does
-  // too: a user message that arrives during it belongs to its own run.
+  // too: a message that arrives during it waits and is answered afterward.
   if (trigger === "created" || trigger === "routine") {
     return {
       messages: [] as T[],
@@ -5320,6 +5352,8 @@ async function resolveModelKey(
       });
       if (!row) return { apiKey: deploymentKeyFor(deps, provider), redact: [] };
       const plaintext = deps.secretStore.load(row.ciphertext, row.id);
+      const authError = validateModelAuthAvailability(provider, modelId, plaintext);
+      if (authError) throw new UnavailableModelForAuthError(authError);
       registerSecrets?.(secretValuesToRedact(parseModelSecret(plaintext)));
       const persist = async (next: string) => {
         const stored = await deps.secretStore.put(
@@ -5498,4 +5532,281 @@ export async function loadCurrentTurnImages(
   }
 
   return images.length ? images : undefined;
+}
+
+/** User turns whose attached images stay hydrated for the model. */
+export const RECENT_TURN_IMAGE_TURNS = 3;
+/** Total hydrated history image bytes, matching the per-attachment ceiling. */
+export const RECENT_TURN_IMAGE_BYTES = ATTACHMENT_MAX_BYTES;
+
+function declaredArtifactBytes(size: unknown): number | undefined {
+  if (typeof size !== "number" || !Number.isFinite(size) || size < 0) return undefined;
+  return size;
+}
+
+/**
+ * Load the images from one turn that fit the remaining budget, newest first.
+ *
+ * Stored artifact sizes are checked before the read, so a picture that cannot
+ * fit is not downloaded. A missing size is measured on the bytes just fetched,
+ * and that picture is dropped before the next one is read. A picture whose
+ * bytes cannot be read is reported as unavailable. Images are returned in
+ * attachment order.
+ */
+async function loadTurnImagesWithinBudget(
+  deps: ExecutorDeps,
+  blocks: MessageBlock[],
+  context: {
+    operationId: string;
+    traceId: string;
+    spaceId: string;
+    userId: string;
+    botId: string;
+    runId: string;
+    signal: AbortSignal;
+  },
+  budget: { remainingBytes: number; remainingImages: number },
+): Promise<{
+  images: NonNullable<AgentRunRequest["currentTurnImages"]>;
+  bytes: number;
+  skippedForBudget: boolean;
+  /** Image blocks in attachment order. `unavailable` means the bytes could not be read. */
+  outcomes: Array<{ name: string; unavailable: boolean }>;
+}> {
+  const imageBlocks = blocks.filter(
+    (block): block is Extract<MessageBlock, { kind: "image" }> => block.kind === "image",
+  );
+  const empty = {
+    images: [] as NonNullable<AgentRunRequest["currentTurnImages"]>,
+    bytes: 0,
+    skippedForBudget: false,
+    outcomes: imageBlocks.map((block) => ({ name: block.name, unavailable: false })),
+  };
+  if (!deps.artifacts || imageBlocks.length === 0) return empty;
+  if (budget.remainingBytes <= 0 || budget.remainingImages <= 0) {
+    return { ...empty, skippedForBudget: true };
+  }
+
+  const rows = await deps.prisma.artifact.findMany({
+    where: {
+      id: { in: imageBlocks.map((block) => block.artifactId) },
+      spaceId: context.spaceId,
+      userId: context.userId,
+    },
+    select: { id: true, storageKey: true, size: true },
+  });
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const newestFirst: NonNullable<AgentRunRequest["currentTurnImages"]> = [];
+  const unavailable = new Set<number>();
+  let usedBytes = 0;
+  let usedCount = 0;
+  let skippedForBudget = false;
+
+  for (let index = imageBlocks.length - 1; index >= 0; index -= 1) {
+    const block = imageBlocks[index];
+    if (!block || !isAttachmentImageMimeType(block.mimeType)) continue;
+    const row = byId.get(block.artifactId);
+    if (!row) {
+      unavailable.add(index);
+      continue;
+    }
+    const roomBytes = budget.remainingBytes - usedBytes;
+    if (usedCount >= budget.remainingImages || roomBytes <= 0) {
+      skippedForBudget = true;
+      break;
+    }
+    const declared = declaredArtifactBytes(row.size);
+    if (declared !== undefined && declared > roomBytes) {
+      skippedForBudget = true;
+      continue;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await deps.artifacts.get(row.storageKey, context);
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      unavailable.add(index);
+      continue;
+    }
+    if (bytes.byteLength > roomBytes) {
+      skippedForBudget = true;
+      continue;
+    }
+    newestFirst.push({
+      name: block.name,
+      mimeType: block.mimeType as "image/jpeg" | "image/png" | "image/webp" | "image/gif",
+      data: bytes,
+    });
+    usedBytes += bytes.byteLength;
+    usedCount += 1;
+  }
+
+  return {
+    images: [...newestFirst].reverse(),
+    bytes: usedBytes,
+    skippedForBudget,
+    outcomes: imageBlocks.map((block, index) => ({
+      name: block.name,
+      unavailable: unavailable.has(index),
+    })),
+  };
+}
+
+function unavailableImageMarker(name: string): string {
+  return `[image: ${name} (unavailable)]`;
+}
+
+/** Replace image markers in attachment order, starting at `cursor`. */
+function rewriteImageMarkersInOrder(
+  content: string,
+  outcomes: readonly { name: string; unavailable: boolean }[],
+): string {
+  let cursor = 0;
+  let next = "";
+  for (const outcome of outcomes) {
+    const marker = `[image: ${outcome.name}]`;
+    const at = content.indexOf(marker, cursor);
+    if (at < 0) continue;
+    const replacement = outcome.unavailable ? unavailableImageMarker(outcome.name) : marker;
+    next += content.slice(cursor, at) + replacement;
+    cursor = at + marker.length;
+  }
+  return next + content.slice(cursor);
+}
+
+/**
+ * Replace image markers from the end, one per attachment.
+ * A leading quote of the same name is left alone.
+ */
+function rewriteImageMarkersFromEnd(
+  content: string,
+  outcomes: readonly { name: string; unavailable: boolean }[],
+): string {
+  let end = content.length;
+  const parts: string[] = [];
+  for (let index = outcomes.length - 1; index >= 0; index -= 1) {
+    const outcome = outcomes[index];
+    if (!outcome) continue;
+    const marker = `[image: ${outcome.name}]`;
+    const at = content.lastIndexOf(marker, Math.max(0, end - 1));
+    if (at < 0 || at + marker.length > end) continue;
+    const replacement = outcome.unavailable ? unavailableImageMarker(outcome.name) : marker;
+    parts.push(content.slice(at + marker.length, end), replacement);
+    end = at;
+  }
+  parts.push(content.slice(0, end));
+  return parts.reverse().join("");
+}
+
+/**
+ * Rewrite the markers attachment rendering appended for this message.
+ * A quoted `[image: name]` earlier in the text is not this message's attachment.
+ */
+function markUnavailableHistoryImages(
+  content: string,
+  blocks: MessageBlock[],
+  outcomes: readonly { name: string; unavailable: boolean }[],
+): string {
+  const rendered = blocksToAgentHistoryText(blocks);
+  const suffixAt = rendered.length > 0 ? content.lastIndexOf(rendered) : -1;
+  if (suffixAt >= 0) {
+    const suffixEnd = suffixAt + rendered.length;
+    return (
+      content.slice(0, suffixAt) +
+      rewriteImageMarkersInOrder(content.slice(suffixAt, suffixEnd), outcomes) +
+      content.slice(suffixEnd)
+    );
+  }
+  return rewriteImageMarkersFromEnd(content, outcomes);
+}
+
+/**
+ * Hydrate the images of the most recent user turns in the run history.
+ *
+ * Only the current turn carried its pictures; earlier turns reached the model
+ * as an `[image: name]` marker, so a question asked one turn after the upload
+ * had nothing to look at. Bounds keep a long thread from growing the prompt
+ * without limit: at most `maxTurns` user turns, a total byte ceiling, and
+ * never more images than the model connection accepts. Within a turn, pictures
+ * that fit are kept newest first instead of dropping the whole turn. A picture
+ * that cannot be read keeps an `[image: name (unavailable)]` marker on that
+ * attachment, not on a quoted copy of the same name. Once a
+ * newer picture is left out, older turns are not backfilled. Bytes are read
+ * through the same artifact path and space/user scope as the current turn, and
+ * a compacted summary is never hydrated because its messages are no longer part
+ * of `history`. Callers skip this for models that cannot accept images.
+ */
+export async function withRecentTurnImages(
+  deps: ExecutorDeps,
+  history: AgentRunRequest["history"],
+  messages: Array<{ id: string; blocks: MessageBlock[] }>,
+  context: {
+    operationId: string;
+    traceId: string;
+    spaceId: string;
+    userId: string;
+    botId: string;
+    runId: string;
+    signal: AbortSignal;
+  },
+  options: {
+    skipMessageId?: string | null;
+    maxTurns?: number;
+    maxBytes?: number;
+    maxImages?: number;
+  } = {},
+): Promise<AgentRunRequest["history"]> {
+  if (!deps.artifacts) return history;
+  const maxTurns = options.maxTurns ?? RECENT_TURN_IMAGE_TURNS;
+  let remainingImages = options.maxImages ?? Number.POSITIVE_INFINITY;
+  let remainingBytes = options.maxBytes ?? RECENT_TURN_IMAGE_BYTES;
+  if (maxTurns <= 0 || remainingImages <= 0 || remainingBytes <= 0) return history;
+  const blocksByMessageId = new Map(messages.map((message) => [message.id, message.blocks]));
+  const hydrated = new Map<
+    string,
+    { images?: NonNullable<AgentRunRequest["currentTurnImages"]>; content?: string }
+  >();
+  let turns = 0;
+
+  for (let index = history.length - 1; index >= 0 && turns < maxTurns; index -= 1) {
+    const entry = history[index];
+    if (!entry?.id || entry.role !== "user" || entry.id === options.skipMessageId) continue;
+    const blocks = blocksByMessageId.get(entry.id);
+    if (!blocks?.some((block) => block.kind === "image")) continue;
+    turns += 1;
+    if (remainingImages <= 0 || remainingBytes <= 0) break;
+    const loaded = await loadTurnImagesWithinBudget(deps, blocks, context, {
+      remainingBytes,
+      remainingImages,
+    });
+    const content = loaded.outcomes.some((outcome) => outcome.unavailable)
+      ? markUnavailableHistoryImages(entry.content, blocks, loaded.outcomes)
+      : entry.content;
+    if (loaded.images.length > 0 || content !== entry.content) {
+      hydrated.set(entry.id, {
+        ...(loaded.images.length > 0 ? { images: loaded.images } : {}),
+        ...(content !== entry.content ? { content } : {}),
+      });
+    }
+    if (loaded.images.length === 0) {
+      if (loaded.skippedForBudget) break;
+      continue;
+    }
+    remainingImages -= loaded.images.length;
+    remainingBytes -= loaded.bytes;
+    // A follow-up is about the newest pictures, so leftover budget is not
+    // spent on an older turn once a newer picture was left out.
+    if (loaded.skippedForBudget) break;
+  }
+
+  if (hydrated.size === 0) return history;
+  return history.map((entry) => {
+    const update = entry.id ? hydrated.get(entry.id) : undefined;
+    if (!update) return entry;
+    return {
+      ...entry,
+      ...(update.content !== undefined ? { content: update.content } : {}),
+      ...(update.images ? { images: update.images } : {}),
+    };
+  });
 }

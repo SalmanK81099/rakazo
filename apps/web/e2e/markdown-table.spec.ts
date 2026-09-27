@@ -310,6 +310,78 @@ test("table chrome follows right-to-left direction", async ({ page }) => {
   expect(labelBox!.x).toBeGreaterThan(iconBox!.x);
 });
 
+test("right-to-left content flips the sort control under dir=auto", async ({ page }) => {
+  // Production bubbles carry dir="auto", never dir="rtl" — the flip must key
+  // off the resolved direction (:dir), not an ancestor attribute.
+  await page.goto(`${fixture}?rtl=1`);
+  const card = page.getByTestId("table-card");
+  await expect(card).toBeVisible();
+  const rtlSort = card.locator(".rk-align-right .rk-table-sort");
+  await expect(rtlSort).toHaveCSS("flex-direction", "row");
+
+  await page.goto(fixture);
+  await expect(page.getByTestId("table-card").locator(".rk-align-right .rk-table-sort")).toHaveCSS(
+    "flex-direction",
+    "row-reverse",
+  );
+});
+
+test("wide tables scroll inside a focusable card region", async ({ page }) => {
+  await page.goto(`${fixture}?wide=1`);
+  const card = page.getByTestId("table-card");
+  const scroll = card.locator(":scope > .rk-table-scroll");
+  await expect(scroll).toBeVisible();
+
+  const metrics = await scroll.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    tabIndex: element.tabIndex,
+  }));
+  // The overflow lives on the region, not the <table> element.
+  expect(metrics.scrollWidth).toBeGreaterThan(metrics.clientWidth);
+  // Focusable so keyboard users can scroll the region.
+  expect(metrics.tabIndex).toBe(0);
+  await scroll.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect
+    .poll(async () => scroll.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(0);
+});
+
+test("the expanded dialog sizes to content instead of the viewport", async ({ page }, testInfo) => {
+  await page.goto(`${fixture}?long=1`);
+  const card = page.getByTestId("table-card");
+  await card.getByRole("button", { name: "Expand table" }).click();
+  const dialog = page.getByRole("dialog", { name: "Table" });
+  await expect(dialog).toBeVisible();
+
+  const box = await dialog.boundingBox();
+  const viewportWidth = page.viewportSize()?.width ?? 1280;
+  expect(box).not.toBeNull();
+  // A two-column table hugs its ~32rem floor; the broken layout stretched the
+  // dialog to ~94vw.
+  expect(box!.width).toBeLessThan(viewportWidth * 0.6);
+  await captureScreenshot(page, testInfo, "table-dialog-width");
+});
+
+test("sorting announces the new order and disambiguates header labels", async ({ page }) => {
+  await page.goto(`${fixture}?dup-cols=1`);
+  const card = page.getByTestId("table-card");
+  await expect(card.getByRole("button", { name: "Sort by column 1" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Sort by Qty, column 2" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Sort by Qty, column 3" })).toBeVisible();
+
+  await card.getByRole("button", { name: "Sort by Qty, column 2" }).click();
+  await expect(card.getByRole("status")).toHaveText("Sorted by Qty, column 2, ascending");
+});
+
+test("paging announces the visible range", async ({ page }) => {
+  await page.goto(`${fixture}?rows=25`);
+  const card = page.getByTestId("table-card");
+  await card.getByRole("button", { name: "Next page" }).click();
+  await expect(card.getByRole("status")).toHaveText("Page 2 of 3");
+});
+
 test.describe("touch table controls", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
 

@@ -52,6 +52,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "Use default server": "Standardserver verwenden",
   // app/index.tsx
   Activity: "Aktivität",
+  "Collapse {name}": "{name} einklappen",
   "Could not create bot": "Bot konnte nicht erstellt werden",
   "Could not delete space": "Space konnte nicht gelöscht werden",
   "Could not load bots": "Bots konnten nicht geladen werden",
@@ -60,6 +61,7 @@ export const DE_MESSAGES: Record<string, string> = {
   Create: "Erstellen",
   "Delete space": "Space löschen",
   "Delete {name}?": "{name} löschen?",
+  "Expand {name}": "{name} ausklappen",
   "Long press to pin or move to a section":
     "Lange drücken, um anzuheften oder in einen Abschnitt zu verschieben",
   "Long press to pin, move, or silence notifications":

@@ -254,6 +254,7 @@ export function inferScript(
 | k | v |
 | --- | --- |
 | cell-a | cell-b |
+| cell-c | cell-d |
 
 \`\`\`
 code-a

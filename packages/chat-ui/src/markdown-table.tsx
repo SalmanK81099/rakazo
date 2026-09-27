@@ -1,18 +1,31 @@
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import type { ComponentPropsWithoutRef, ReactElement, ReactNode } from "react";
-import { Children, isValidElement, memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Children,
+  createContext,
+  isValidElement,
+  memo,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { CheckIcon, CopyIcon } from "./icons";
 import type { ExtractedTable, HastNode, TableAlign, TableSortDirection } from "./table-utils";
 import {
-  columnMinWidths,
+  columnSortLabel,
   extractTable,
-  isNumericColumn,
   nextSort,
   sortRows,
   TABLE_PAGE_SIZE,
   tableToCsv,
   tableToTsv,
 } from "./table-utils";
+
+/** The markdown source a render was parsed from — lets a reparsed-but-
+    unchanged table reuse its extraction by content instead of node identity. */
+export const MarkdownTableSourceContext = createContext("");
 
 /**
  * Renders a GFM markdown table as an interactive data card. Extracted plain
@@ -29,7 +42,16 @@ export const MarkdownTable = memo(function MarkdownTable({
   tableProps?: ComponentPropsWithoutRef<"table">;
   children?: ReactNode;
 }) {
-  const extracted = useMemo(() => extractTable(node), [node]);
+  const source = useContext(MarkdownTableSourceContext);
+  const start = node?.position?.start?.offset;
+  const end = node?.position?.end?.offset;
+  const sourceKey =
+    typeof start === "number" && typeof end === "number" && start <= end && end <= source.length
+      ? source.slice(start, end)
+      : null;
+  // sourceKey pins the extraction to the source text; node identity is only
+  // the fallback when the parser supplies no position.
+  const extracted = useMemo(() => extractTable(node), [sourceKey ?? node]);
   const rendered = useMemo(() => extractRenderedCells(children), [children]);
   if (!extracted) return <table {...tableProps}>{children}</table>;
   return (
@@ -48,39 +70,20 @@ export const TableCard = memo(function TableCard({
   renderedHeaders?: ReactNode[];
   renderedRows?: ReactNode[][];
 }) {
-  const { columns, aligns, rows } = table;
-  const schemaKey = JSON.stringify([columns, aligns]);
+  const { columns, aligns, rows, schemaKey, dataSignature, numericColumns, minWidths, rowKeys } =
+    table;
   const [sort, setSort] = useState<SortState>(null);
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [copiedSignature, setCopiedSignature] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const copiedTimer = useRef<number | undefined>(undefined);
+  const announceTimer = useRef<number | undefined>(undefined);
   const expandButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
-  const dataSignature = JSON.stringify([columns, rows]);
   const copied = copiedSignature === dataSignature;
 
-  const numericColumns = useMemo(() => {
-    const numeric = new Set<number>();
-    columns.forEach((_, i) => {
-      if (isNumericColumn(rows, i)) numeric.add(i);
-    });
-    return numeric;
-  }, [columns, rows]);
-
-  const minWidths = useMemo(() => columnMinWidths(columns, rows), [columns, rows]);
-  const rowKeys = useMemo(() => {
-    const occurrences = new Map<string, number>();
-    return new Map(
-      rows.map((row) => {
-        const signature = JSON.stringify(row);
-        const occurrence = occurrences.get(signature) ?? 0;
-        occurrences.set(signature, occurrence + 1);
-        return [row, `${signature}:${occurrence}`] as const;
-      }),
-    );
-  }, [rows]);
   const renderedRowsBySource = useMemo(
     () => new Map(rows.map((row, index) => [row, renderedRows?.[index]])),
     [renderedRows, rows],
@@ -105,11 +108,32 @@ export const TableCard = memo(function TableCard({
     setPage(0);
     setExpanded(false);
   }, [schemaKey]);
-  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
+  useEffect(
+    () => () => {
+      window.clearTimeout(copiedTimer.current);
+      window.clearTimeout(announceTimer.current);
+    },
+    [],
+  );
+
+  // Clear then restore so identical successive strings still fire a live-region update.
+  const announce = (text: string) => {
+    window.clearTimeout(announceTimer.current);
+    setAnnouncement("");
+    announceTimer.current = window.setTimeout(() => setAnnouncement(text), 0);
+  };
 
   const toggleSort = (column: number) => {
-    setSort((current) => nextSort(current, column));
+    const next = nextSort(sort, column);
+    setSort(next);
     setPage(0);
+    announce(
+      next
+        ? `Sorted by ${columnSortLabel(columns, column)}, ${
+            next.direction === "asc" ? "ascending" : "descending"
+          }`
+        : "Sort cleared",
+    );
   };
 
   const copyRows = () => {
@@ -118,6 +142,7 @@ export const TableCard = memo(function TableCard({
       .writeText(tableToTsv(columns, sortedRows))
       .then(() => {
         setCopiedSignature(dataSignature);
+        announce("Copied");
         window.clearTimeout(copiedTimer.current);
         copiedTimer.current = window.setTimeout(() => setCopiedSignature(null), 1500);
       })
@@ -165,7 +190,10 @@ export const TableCard = memo(function TableCard({
         className="rk-table-tool"
         aria-label="Previous page"
         disabled={safePage === 0}
-        onClick={() => setPage(safePage - 1)}
+        onClick={() => {
+          setPage(safePage - 1);
+          announce(`Page ${safePage} of ${pageCount}`);
+        }}
       >
         <ChevronLeftIcon />
       </button>
@@ -174,7 +202,10 @@ export const TableCard = memo(function TableCard({
         className="rk-table-tool"
         aria-label="Next page"
         disabled={safePage >= pageCount - 1}
-        onClick={() => setPage(safePage + 1)}
+        onClick={() => {
+          setPage(safePage + 1);
+          announce(`Page ${safePage + 2} of ${pageCount}`);
+        }}
       >
         <ChevronRightIcon />
       </button>
@@ -227,22 +258,39 @@ export const TableCard = memo(function TableCard({
     </div>
   );
 
+  const status = (
+    <div role="status" className="rk-sr-only">
+      {announcement}
+    </div>
+  );
+
   return (
     <Dialog open={expanded} onOpenChange={setExpanded}>
       <div className="rk-table-card rk-table-box" data-testid="table-card">
+        {/* Keep the live region in the active view — dialog content is outside the card. */}
+        {expanded ? null : status}
         {tools("card")}
-        <div className="rk-table-scroll">{tableView("card")}</div>
+        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must
+            be keyboard-focusable (WCAG 2.1.1 / axe scrollable-region-focusable). */}
+        <section className="rk-table-scroll" aria-label="Table" tabIndex={0}>
+          {tableView("card")}
+        </section>
         {pager}
       </div>
       <DialogContent
         showCloseButton={false}
         initialFocus={closeButtonRef}
         finalFocus={expandButtonRef}
-        className="rk-table-dialog rk-table-box rk-chat-markdown"
+        className="rk-table-dialog rk-table-box rk-chat-markdown w-auto sm:max-w-none"
       >
         <DialogTitle className="rk-table-dialog-title">Table</DialogTitle>
+        {expanded ? status : null}
         {tools("dialog")}
-        <div className="rk-table-scroll rk-table-dialog-scroll">{tableView("dialog")}</div>
+        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must
+            be keyboard-focusable (WCAG 2.1.1 / axe scrollable-region-focusable). */}
+        <section className="rk-table-scroll rk-table-dialog-scroll" aria-label="Table" tabIndex={0}>
+          {tableView("dialog")}
+        </section>
         {pager}
       </DialogContent>
     </Dialog>
@@ -267,7 +315,7 @@ function TableView({
   aligns: TableAlign[];
   rows: string[][];
   rowOffset: number;
-  numericColumns: Set<number>;
+  numericColumns: ReadonlySet<number>;
   minWidths: Record<number, string>;
   renderedHeaders?: ReactNode[];
   renderedRows: Map<string[], ReactNode[] | undefined>;
@@ -281,6 +329,9 @@ function TableView({
     const align = aligns[index] ?? (numericColumns.has(index) ? "right" : "left");
     return align && align !== "left" ? `rk-align-${align}` : undefined;
   };
+  // Sort labels need disambiguation: empty headers and duplicate names would
+  // otherwise produce identical or blank "Sort by" announcements.
+  const sortLabel = (index: number) => columnSortLabel(columns, index);
   return (
     <table className="rk-table" aria-label="Markdown table">
       <thead>
@@ -289,7 +340,7 @@ function TableView({
           {columns.map((column, i) => (
             <SortableColumnHeader
               key={i}
-              column={column}
+              column={sortLabel(i)}
               content={renderedHeaders?.[i] ?? column}
               direction={sort?.column === i ? sort.direction : null}
               className={alignClass(i)}

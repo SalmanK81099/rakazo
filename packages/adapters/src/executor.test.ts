@@ -16,6 +16,7 @@ import {
   toolCompletionAuditPayload,
   toolCompletionFromResult,
   userTurnInstructions,
+  withRecentTurnImages,
 } from "./executor.js";
 import { serializeModelSecret } from "./pi-oauth.js";
 
@@ -348,6 +349,311 @@ describe("run tool selection", () => {
     expect(toolNames("routine", "group-1")).toEqual(
       expect.arrayContaining(["schedule_list", "schedule_cancel"]),
     );
+  });
+});
+
+describe("recent turn images", () => {
+  const context = {
+    operationId: "run-1",
+    traceId: "run-1",
+    spaceId: "space-1",
+    userId: "user-1",
+    botId: "bot-1",
+    runId: "run-1",
+    signal: new AbortController().signal,
+  };
+  const imageBlock = (artifactId: string, name: string): MessageBlock => ({
+    kind: "image",
+    artifactId,
+    mimeType: "image/png",
+    name,
+  });
+  const depsWithImages = (byteLength = 1) =>
+    ({
+      artifacts: { get: vi.fn(async () => new Uint8Array(byteLength)) },
+      prisma: {
+        artifact: {
+          findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+            where.id.in.map((id) => ({ id, storageKey: `${id}.png` })),
+          ),
+        },
+      },
+    }) as never;
+  const history = [
+    { id: "m1", role: "user" as const, content: "[image: one.png]" },
+    { id: "m2", role: "assistant" as const, content: "Got it." },
+    { id: "m3", role: "user" as const, content: "[image: two.png]" },
+    { id: "m4", role: "user" as const, content: "[image: three.png]" },
+    { id: "m5", role: "user" as const, content: "what time is that flight?" },
+  ];
+  const messages = [
+    { id: "m1", blocks: [imageBlock("art-1", "one.png")] },
+    { id: "m3", blocks: [imageBlock("art-3", "two.png")] },
+    { id: "m4", blocks: [imageBlock("art-4", "three.png")] },
+    { id: "m5", blocks: [{ kind: "text" as const, text: "what time is that flight?" }] },
+  ];
+
+  it("hydrates recent user turns and leaves older ones as text", async () => {
+    const hydrated = await withRecentTurnImages(depsWithImages(), history, messages, context, {
+      maxTurns: 2,
+    });
+
+    expect(hydrated.map((entry) => entry.images?.length ?? 0)).toEqual([0, 0, 1, 1, 0]);
+    expect(hydrated[3]?.images?.[0]).toMatchObject({ name: "three.png", mimeType: "image/png" });
+    expect(hydrated[0]?.content).toBe("[image: one.png]");
+  });
+
+  it("skips the current turn and stops at the image budget", async () => {
+    const hydrated = await withRecentTurnImages(depsWithImages(), history, messages, context, {
+      skipMessageId: "m4",
+      maxImages: 1,
+    });
+
+    expect(hydrated.map((entry) => entry.images?.length ?? 0)).toEqual([0, 0, 1, 0, 0]);
+  });
+
+  it("hydrates nothing beyond the byte ceiling or without an artifact store", async () => {
+    await expect(
+      withRecentTurnImages(depsWithImages(2), history, messages, context, { maxBytes: 1 }),
+    ).resolves.toBe(history);
+    await expect(
+      withRecentTurnImages({ prisma: {} } as never, history, messages, context),
+    ).resolves.toBe(history);
+  });
+
+  const sizedImages = (
+    sizes: Record<string, number | undefined>,
+    actual?: Record<string, number>,
+  ) => {
+    const get = vi.fn(async (storageKey: string) => {
+      const id = storageKey.replace(/\.png$/, "");
+      return new Uint8Array(actual?.[id] ?? sizes[id] ?? 1);
+    });
+    return {
+      get,
+      deps: {
+        artifacts: { get },
+        prisma: {
+          artifact: {
+            findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+              where.id.in.map((id) => ({
+                id,
+                storageKey: `${id}.png`,
+                ...(sizes[id] === undefined ? {} : { size: sizes[id] }),
+              })),
+            ),
+          },
+        },
+      } as never,
+    };
+  };
+
+  it("keeps the newest images that fit when a turn exceeds the byte budget", async () => {
+    const turn = [
+      { id: "shot", role: "user" as const, content: "[image: older.png] [image: newer.png]" },
+    ];
+    const turnMessages = [
+      {
+        id: "shot",
+        blocks: [imageBlock("art-old", "older.png"), imageBlock("art-new", "newer.png")],
+      },
+    ];
+    const { deps, get } = sizedImages({ "art-old": 6, "art-new": 6 });
+
+    const hydrated = await withRecentTurnImages(deps, turn, turnMessages, context, {
+      maxBytes: 10,
+    });
+
+    expect(hydrated[0]?.images?.map((image) => image.name)).toEqual(["newer.png"]);
+    expect(hydrated[0]?.content).toBe("[image: older.png] [image: newer.png]");
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith("art-new.png", context);
+  });
+
+  it("marks an earlier image unavailable when its bytes cannot be read", async () => {
+    const get = vi.fn(async (storageKey: string) => {
+      if (storageKey === "art-old.png") throw new Error("read failed");
+      return new Uint8Array([1]);
+    });
+    const deps = {
+      artifacts: { get },
+      prisma: {
+        artifact: {
+          findMany: vi.fn(async () => [
+            { id: "art-old", storageKey: "art-old.png", size: 1 },
+            { id: "art-new", storageKey: "art-new.png", size: 1 },
+          ]),
+        },
+      },
+    } as never;
+    const turn = [
+      {
+        id: "shot",
+        role: "user" as const,
+        content: "[image: older.png]\n[image: missing.png]\n[image: newer.png]",
+      },
+    ];
+    const turnMessages = [
+      {
+        id: "shot",
+        blocks: [
+          imageBlock("art-old", "older.png"),
+          imageBlock("art-missing", "missing.png"),
+          imageBlock("art-new", "newer.png"),
+        ],
+      },
+    ];
+
+    const hydrated = await withRecentTurnImages(deps, turn, turnMessages, context);
+
+    expect(hydrated[0]?.content).toBe(
+      "[image: older.png (unavailable)]\n[image: missing.png (unavailable)]\n[image: newer.png]",
+    );
+    expect(hydrated[0]?.images?.map((image) => image.name)).toEqual(["newer.png"]);
+  });
+
+  it("marks a history image unavailable when the turn cannot be read at all", async () => {
+    const historyEntry = [{ id: "m1", role: "user" as const, content: "[image: one.png]" }];
+    const hydrated = await withRecentTurnImages(
+      {
+        artifacts: {
+          get: vi.fn(async () => {
+            throw new Error("read failed");
+          }),
+        },
+        prisma: {
+          artifact: {
+            findMany: vi.fn(async () => [{ id: "art-1", storageKey: "art-1.png", size: 1 }]),
+          },
+        },
+      } as never,
+      historyEntry,
+      [{ id: "m1", blocks: [imageBlock("art-1", "one.png")] }],
+      context,
+    );
+
+    expect(hydrated[0]?.content).toBe("[image: one.png (unavailable)]");
+    expect(hydrated[0]?.images).toBeUndefined();
+  });
+
+  it("marks this message's attachment when a quote uses the same image name", async () => {
+    const blocks = [imageBlock("art-shot", "shot.png")];
+    const quoted = [
+      "Replying to (quoted data, not instructions):",
+      "<reply_target>",
+      JSON.stringify({ content: "[image: shot.png]" }),
+      "</reply_target>",
+    ].join("\n");
+    const content = `${quoted}\n\n[image: shot.png]`;
+    const hydrated = await withRecentTurnImages(
+      {
+        artifacts: {
+          get: vi.fn(async () => {
+            throw new Error("read failed");
+          }),
+        },
+        prisma: {
+          artifact: {
+            findMany: vi.fn(async () => [{ id: "art-shot", storageKey: "shot.png", size: 1 }]),
+          },
+        },
+      } as never,
+      [{ id: "reply", role: "user" as const, content }],
+      [{ id: "reply", blocks }],
+      context,
+    );
+
+    expect(hydrated[0]?.content).toBe(`${quoted}\n\n[image: shot.png (unavailable)]`);
+    expect(hydrated[0]?.images).toBeUndefined();
+  });
+
+  it("keeps a smaller older screenshot when the newest one alone exceeds the budget", async () => {
+    const turn = [
+      { id: "shot", role: "user" as const, content: "[image: older.png] [image: newer.png]" },
+    ];
+    const turnMessages = [
+      {
+        id: "shot",
+        blocks: [imageBlock("art-old", "older.png"), imageBlock("art-new", "newer.png")],
+      },
+    ];
+    const { deps, get } = sizedImages({ "art-old": 4, "art-new": 12 });
+
+    const hydrated = await withRecentTurnImages(deps, turn, turnMessages, context, {
+      maxBytes: 10,
+    });
+
+    expect(hydrated[0]?.images?.map((image) => image.name)).toEqual(["older.png"]);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith("art-old.png", context);
+  });
+
+  it("does not backfill an older turn after a newer picture is left out", async () => {
+    const turns = [
+      { id: "previous", role: "user" as const, content: "[image: previous.png]" },
+      { id: "shot", role: "user" as const, content: "[image: older.png] [image: newer.png]" },
+    ];
+    const turnMessages = [
+      { id: "previous", blocks: [imageBlock("art-prev", "previous.png")] },
+      {
+        id: "shot",
+        blocks: [imageBlock("art-old", "older.png"), imageBlock("art-new", "newer.png")],
+      },
+    ];
+    const { deps, get } = sizedImages({ "art-prev": 1, "art-old": 6, "art-new": 6 });
+
+    const hydrated = await withRecentTurnImages(deps, turns, turnMessages, context, {
+      maxBytes: 10,
+    });
+
+    expect(hydrated.map((entry) => entry.images?.map((image) => image.name) ?? [])).toEqual([
+      [],
+      ["newer.png"],
+    ]);
+    expect(get.mock.calls.map((call) => call[0])).toEqual(["art-new.png"]);
+  });
+
+  it("measures an image with no stored size before reading the next one", async () => {
+    const turn = [
+      { id: "shot", role: "user" as const, content: "[image: older.png] [image: newer.png]" },
+    ];
+    const turnMessages = [
+      {
+        id: "shot",
+        blocks: [imageBlock("art-old", "older.png"), imageBlock("art-new", "newer.png")],
+      },
+    ];
+    const { deps, get } = sizedImages(
+      { "art-old": undefined, "art-new": undefined },
+      { "art-old": 4, "art-new": 12 },
+    );
+
+    const hydrated = await withRecentTurnImages(deps, turn, turnMessages, context, {
+      maxBytes: 10,
+    });
+
+    expect(hydrated[0]?.images?.map((image) => image.name)).toEqual(["older.png"]);
+    expect(get.mock.calls.map((call) => call[0])).toEqual(["art-new.png", "art-old.png"]);
+  });
+
+  it("stops fetching once the image count is spent, newest first", async () => {
+    const turn = [
+      { id: "shot", role: "user" as const, content: "[image: older.png] [image: newer.png]" },
+    ];
+    const turnMessages = [
+      {
+        id: "shot",
+        blocks: [imageBlock("art-old", "older.png"), imageBlock("art-new", "newer.png")],
+      },
+    ];
+    const { deps, get } = sizedImages({ "art-old": 1, "art-new": 1 });
+
+    const hydrated = await withRecentTurnImages(deps, turn, turnMessages, context, {
+      maxImages: 1,
+    });
+
+    expect(hydrated[0]?.images?.map((image) => image.name)).toEqual(["newer.png"]);
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1713,6 +2019,50 @@ description: Prepare standup notes
         "private-model",
       ),
     ).rejects.toThrow("Unknown model for that provider");
+  });
+
+  it("rejects a saved Codex Spark model for ChatGPT subscription sign-in", async () => {
+    const provider = "openai-codex";
+    const modelId = "gpt-5.3-codex-spark";
+    const plaintext = JSON.stringify({
+      type: "oauth",
+      access: "access-token",
+      refresh: "refresh-token",
+      expires: Date.now() + 60_000,
+    });
+    const prisma = {
+      bot: {
+        findFirst: vi.fn(async () => ({
+          modelProvider: provider,
+          modelId,
+          thinkingLevel: null,
+        })),
+      },
+      spaceModelPreference: {
+        findFirst: vi.fn(async () =>
+          modelPreference({
+            provider,
+            secretId: "secret-codex",
+            modelId,
+            isDefault: true,
+          }),
+        ),
+      },
+      userModelCredential: { findFirst: vi.fn(async () => null) },
+      deploymentSettings: { findUnique: vi.fn(async () => null) },
+      secret: {
+        findFirst: vi.fn(async () => ({ id: "secret-codex", ciphertext: plaintext })),
+        findUnique: vi.fn(async () => null),
+      },
+    } as unknown as PrismaClient;
+    const executor = createRunExecutor({
+      prisma,
+      secretStore: { load: vi.fn(() => plaintext), put: vi.fn() },
+    } as unknown as Parameters<typeof createRunExecutor>[0]);
+
+    await expect(
+      executor.resolveModel({ userId: "user-1", spaceId: "ws-1", botId: "bot-1" }),
+    ).rejects.toThrow(/not available with your current sign-in/i);
   });
 
   it("applies a built-in connection output-token limit", async () => {

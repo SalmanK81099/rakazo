@@ -34,6 +34,16 @@
   color: var(--foreground);
 }
 
+/* Chrome is not table text: row numbers, the toolbar strip, the pager range,
+   and the empty state must stay out of text selections so a dragged excerpt
+   still matches the message's rendered text for quoting. */
+.rk-table-head,
+.rk-table-gutter,
+.rk-table-footer,
+.rk-table-empty {
+  user-select: none;
+}
+
 .rk-table-scroll {
   overflow: auto;
   max-height: 20em;
@@ -145,7 +155,9 @@ button.rk-table-sort {
   flex-direction: row-reverse;
 }
 
-[dir="rtl"] .rk-align-right .rk-table-sort {
+/* Bubbles use dir="auto", not dir="rtl" — :dir() matches the resolved
+   direction so RTL content actually triggers the flip. */
+.rk-align-right .rk-table-sort:dir(rtl) {
   flex-direction: row;
 }
 
@@ -195,6 +207,10 @@ button.rk-table-sort {
   display: table;
   width: max-content;
   min-width: 100%;
+  /* Cancel the legacy .rk-chat-markdown table clamp so wide tables overflow
+     into .rk-table-scroll instead of scrolling the <table> element itself. */
+  max-width: none;
+  overflow: visible;
   margin: 0;
   border-collapse: collapse;
   font-size: 0.85em;
@@ -231,9 +247,12 @@ button.rk-table-sort {
   }
 }
 
+/* DialogContent's default text-sm shrinks cells below the card's; the dialog
+   is the expanded view, so it tracks the document base size instead. */
 .rk-table-dialog {
   display: flex;
   flex-direction: column;
+  font-size: 1rem;
   min-width: min(32rem, 94vw);
   max-width: 94vw;
   max-height: 90vh;
@@ -280,4 +299,16 @@ button.rk-table-sort {
   max-height: none;
   flex: 1;
   min-height: 0;
+}
+
+.rk-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
