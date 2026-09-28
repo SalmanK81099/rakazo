@@ -434,6 +434,25 @@ describe("mobile call session on a timer", () => {
     vi.mocked(subscribeThread).mockReset();
   });
 
+  it("does not let an earlier farewell timer end the next call", async () => {
+    const fake = fakes({ onDevice: true });
+    startCall({ botId: "bot-1", botName: "Ada", transcribe: false }, fake.deps);
+    await tick();
+    fake.hear("that's all");
+    await tick();
+    fake.replyWith("message-1", "Talk soon.");
+    await tick();
+
+    fake.hear("see you");
+    await tick();
+    endCall();
+    startCall({ botId: "bot-1", botName: "Ada", transcribe: false }, fake.deps);
+    await tick();
+    await tick(20_000);
+
+    expect(getSnapshot()?.botId).toBe("bot-1");
+  });
+
   it("reconnects the call feed when the live stream ends", async () => {
     const { rpc, subscribeThread } = await import("./api");
     vi.mocked(rpc).mockResolvedValue({ cursor: 7, messages: [], run: null } as never);

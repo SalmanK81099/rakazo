@@ -380,6 +380,23 @@ describe("call session", () => {
     expect(getSnapshot()?.botId).toBe("bot-b");
   });
 
+  it("does not let an earlier farewell timer end the next call", async () => {
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    getThread.mockResolvedValue(snapshot([botMessage("message-1", "Talk soon")]) as never);
+    await heard("that's all");
+    const speech = vi.mocked(speaker.subscribe).mock.calls.at(-1)?.[0];
+    speech?.({ status: "speaking", caption: "Talk soon" });
+    await Promise.resolve();
+
+    await heard("see you");
+    endCall();
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(getSnapshot()?.botId).toBe("call-bot");
+  });
+
   it("hangs up once the bot has answered a goodbye", async () => {
     startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
     getThread.mockResolvedValue(snapshot([botMessage("message-1", "Talk soon")]) as never);

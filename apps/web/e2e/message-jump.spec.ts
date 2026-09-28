@@ -67,7 +67,10 @@ test("a ?m= deep link jumps while the thread is streaming", async ({ page }) => 
       history.pushState({}, "", `?m=${id}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, messageId);
-    await expect(page).toHaveURL(new RegExp(`m=${messageId}`));
+    // The jump's finally strips this one-shot param as soon as the around-fetch
+    // settles. toHaveURL only samples the current URL, so under load the first
+    // poll can already miss ?m= and then retry a value that will not return.
+    // The around response is the proof the router observed the deep link.
 
     // The jump lands mid-stream: the around-page fetch succeeds while sends
     // keep landing, and the target scrolls back into view. (The transcript

@@ -459,6 +459,11 @@ msgstr "Archived. Chat, memory, and files kept."
 msgid "Arguments"
 msgstr "Arguments"
 
+#: src/pages/Artifacts.tsx:229
+#: src/pages/Shell.tsx:3263
+msgid "Artifacts"
+msgstr "Artifacts"
+
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx:16
 msgid "Ask before {0}"
@@ -608,6 +613,10 @@ msgstr "Bot screen preview"
 #: src/pages/MessagingSettingsOverlay.tsx:151
 msgid "Bot to link"
 msgstr "Bot to link"
+
+#: src/pages/Artifacts.tsx:226
+msgid "Bots"
+msgstr "Bots"
 
 #: src/components/ApprovalRulesSettings.tsx:115
 msgid "Bots act without asking by default. Add an exception only when you want to review a type of action first."
@@ -3204,7 +3213,7 @@ msgstr "Search providers"
 msgid "Searching…"
 msgstr "Searching…"
 
-#: src/pages/Shell.tsx:3264
+#: src/pages/Shell.tsx:3288
 msgid "Select a bot"
 msgstr "Select a bot"
 
@@ -3871,15 +3880,6 @@ msgstr "All bots"
 msgid "All time"
 msgstr "All time"
 
-#: src/components/AppRail.tsx:20
-#: src/pages/Artifacts.tsx:218
-msgid "Artifacts"
-msgstr "Artifacts"
-
-#: src/components/AppRail.tsx:17
-msgid "Bots"
-msgstr "Bots"
-
 #: src/pages/CallView.tsx:241
 msgid "Call"
 msgstr "Call"
@@ -3977,10 +3977,6 @@ msgstr "Say something. Silence sends it."
 #: src/pages/Artifacts.tsx:267
 msgid "Search artifacts…"
 msgstr "Search artifacts…"
-
-#: src/components/AppRail.tsx:14
-msgid "Sections"
-msgstr "Sections"
 
 #: src/pages/memory-providers/SerenitySettingsForm.tsx:52
 msgid "Serenity endpoint is required."

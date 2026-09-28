@@ -459,6 +459,11 @@ msgstr "已归档。对话、记忆和文件保留。"
 msgid "Arguments"
 msgstr "参数"
 
+#: src/pages/Artifacts.tsx:229
+#: src/pages/Shell.tsx:3263
+msgid "Artifacts"
+msgstr ""
+
 #. placeholder {0}: rule.matchValue
 #: src/components/ApprovalRulesSettings.tsx:16
 msgid "Ask before {0}"
@@ -608,6 +613,10 @@ msgstr "Bot 屏幕预览"
 #: src/pages/MessagingSettingsOverlay.tsx:151
 msgid "Bot to link"
 msgstr "要关联的 Bot"
+
+#: src/pages/Artifacts.tsx:226
+msgid "Bots"
+msgstr ""
 
 #: src/components/ApprovalRulesSettings.tsx:115
 msgid "Bots act without asking by default. Add an exception only when you want to review a type of action first."
@@ -3204,7 +3213,7 @@ msgstr "搜索提供方"
 msgid "Searching…"
 msgstr "正在搜索…"
 
-#: src/pages/Shell.tsx:3264
+#: src/pages/Shell.tsx:3288
 msgid "Select a bot"
 msgstr "选择 Bot"
 
@@ -3871,15 +3880,6 @@ msgstr ""
 msgid "All time"
 msgstr ""
 
-#: src/components/AppRail.tsx:20
-#: src/pages/Artifacts.tsx:218
-msgid "Artifacts"
-msgstr ""
-
-#: src/components/AppRail.tsx:17
-msgid "Bots"
-msgstr ""
-
 #: src/pages/CallView.tsx:241
 msgid "Call"
 msgstr "通话"
@@ -3976,10 +3976,6 @@ msgstr "说点什么。静音即发送。"
 
 #: src/pages/Artifacts.tsx:267
 msgid "Search artifacts…"
-msgstr ""
-
-#: src/components/AppRail.tsx:14
-msgid "Sections"
 msgstr ""
 
 #: src/pages/memory-providers/SerenitySettingsForm.tsx:52

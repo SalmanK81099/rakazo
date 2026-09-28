@@ -328,6 +328,9 @@ async function handleTranscript(raw: string): Promise<void> {
   });
   if (isFarewell(text)) {
     hangUpAfterReply = true;
+    // A second goodbye replaces this timer. Clear the previous one or it can
+    // end the next call after this one has already hung up.
+    if (hangUpTimer) clearTimeout(hangUpTimer);
     hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT_MS);
   }
   try {

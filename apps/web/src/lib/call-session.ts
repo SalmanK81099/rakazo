@@ -351,6 +351,9 @@ async function handleTranscript(text: string) {
   set({ heard: text, phase: "thinking", exchanges: [...exchanges, { role: "user", text }] });
   if (closing) {
     hangUpAfterReply = true;
+    // A second goodbye replaces this timer. Clear the previous one or it can
+    // end the next call after this one has already hung up.
+    if (hangUpTimer) clearTimeout(hangUpTimer);
     hangUpTimer = setTimeout(endCall, FAREWELL_TIMEOUT);
   }
   try {
