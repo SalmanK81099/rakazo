@@ -577,6 +577,7 @@ function credentialStoreForRequest(
     provider,
     toOAuthCredential(oauth.credential),
     persist ? (next) => persist(next) : undefined,
+    oauth.retire,
   );
 }
 

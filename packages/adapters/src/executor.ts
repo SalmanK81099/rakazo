@@ -15,6 +15,8 @@ import type {
   JobPublisher,
   ManagedConnectorProvider,
   MemoryStore,
+  ModelCredentialFailedState,
+  ModelCredentialRetireReason,
   NotificationMessage,
   NotificationProvider,
   SandboxProvider,
@@ -27,7 +29,7 @@ import {
   routineWakeupJob,
   runContinueJob,
 } from "@rakazo/adapter-kit";
-import type { MessageBlock, RunStatus } from "@rakazo/contracts";
+import type { ComputerCommand, MessageBlock, RunStatus } from "@rakazo/contracts";
 import {
   ATTACHMENT_MAX_BYTES,
   BOT_DESCRIPTION_MAX_LENGTH,
@@ -35,6 +37,7 @@ import {
   BOT_TITLE_MAX_LENGTH,
   BotSecretName,
   botSecretSubmissionSchema,
+  COMPUTER_COMMAND_OUTPUT_MAX_CHARS,
   isAttachmentImageMimeType,
   OPENAI_COMPATIBLE_PROVIDER_ID,
 } from "@rakazo/contracts";
@@ -100,6 +103,7 @@ import {
   type Prisma,
   type PrismaClient,
   parseComputerMode,
+  retireModelCredential,
   SpaceLimitError,
   type ThreadEvents,
 } from "@rakazo/db";
@@ -250,6 +254,8 @@ import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
 import {
+  isRetiredModelCredentialError,
+  matchesFailedOAuthSecret,
   parseModelSecret,
   persistStoredModelSecret,
   resolveModelAuth,
@@ -908,7 +914,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
       maxImagesPerPrompt: resolved.maxImagesPerPrompt,
       thinkingLevel: resolved.thinkingLevel ?? null,
       oauth: resolved.oauth
-        ? { credential: resolved.oauth, persist: resolved.persistOAuth }
+        ? {
+            credential: resolved.oauth,
+            persist: resolved.persistOAuth,
+            retire: resolved.retireOAuth,
+          }
         : undefined,
     };
   };
@@ -973,7 +983,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
         maxImagesPerPrompt: resolved.maxImagesPerPrompt,
         thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
         oauth: resolved.oauth
-          ? { credential: resolved.oauth, persist: resolved.persistOAuth }
+          ? {
+              credential: resolved.oauth,
+              persist: resolved.persistOAuth,
+              retire: resolved.retireOAuth,
+            }
           : undefined,
       };
     },
@@ -1512,8 +1526,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
             (values) => runSecrets.push(...values),
           );
         } catch (error) {
-          if (!(error instanceof UnavailableModelForAuthError)) throw error;
-          await failRunBeforeModel(error.message);
+          // A dead or account-switched credential is already deleted. Retrying
+          // setup would requeue the run and might fall back to another model.
+          if (
+            !(error instanceof UnavailableModelForAuthError) &&
+            !isRetiredModelCredentialError(error)
+          ) {
+            throw error;
+          }
+          await failRunBeforeModel(
+            error instanceof Error ? error.message : "Connect the provider again.",
+          );
           return;
         }
         runSecrets.push(...resolved.redact);
@@ -2139,7 +2162,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       baseUrl: judgeKey.baseUrl,
                       reasoning: judgeKey.reasoning,
                       oauth: judgeKey.oauth
-                        ? { credential: judgeKey.oauth, persist: judgeKey.persistOAuth }
+                        ? {
+                            credential: judgeKey.oauth,
+                            persist: judgeKey.persistOAuth,
+                            retire: judgeKey.retireOAuth,
+                          }
                         : undefined,
                       runId,
                       spaceId: run.spaceId,
@@ -2363,6 +2390,34 @@ export function createRunExecutor(deps: ExecutorDeps) {
             runSecrets.push(...additions);
             progressRedactor = createStreamingRedactor(runSecrets);
           };
+          const appendComputerCommand = (payload: ComputerCommand) =>
+            deps.events
+              .append({
+                spaceId: run.spaceId,
+                threadId: thread.id,
+                botId: bot.id,
+                runId,
+                type: "computer.command",
+                payload,
+              })
+              // The Activity feed is a view; losing an entry must not fail the tool.
+              .catch((error: unknown) => getLogger().error("computer command event", error));
+          /** Record a finished file/app action for the terminal's Activity view. */
+          const recordComputerAction = (
+            kind: Exclude<ComputerCommand["kind"], "shell">,
+            target: string,
+            outcome: { error?: string; bytes?: number } = {},
+          ) =>
+            appendComputerCommand({
+              executionId,
+              kind,
+              command: redactSecrets(target, runSecrets),
+              cwd: ".",
+              status: "done",
+              exitCode: outcome.error ? 1 : 0,
+              output: outcome.error ? redactSecrets(outcome.error, runSecrets) : "",
+              ...(outcome.bytes === undefined ? {} : { bytes: outcome.bytes }),
+            });
           if (name === "computer_observe") {
             if (heldForTakeover) {
               return { error: DESKTOP_HELD_FOR_TAKEOVER_MESSAGE };
@@ -2456,16 +2511,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (name === "write_file") {
             const filePath = String(args.path ?? "notes/result.txt");
-            const content = textContentArg(args.content, "");
+            const content = new TextEncoder().encode(textContentArg(args.content, ""));
             workspaceCheckpoint.markDirty();
-            await deps.sandbox.writeFile(
-              computer,
-              {
-                path: resolveBotWorkspacePath(computerMode, bot.id, filePath),
-                content: new TextEncoder().encode(content),
-              },
-              context,
-            );
+            try {
+              await deps.sandbox.writeFile(
+                computer,
+                { path: resolveBotWorkspacePath(computerMode, bot.id, filePath), content },
+                context,
+              );
+            } catch (error) {
+              await recordComputerAction("write_file", filePath, {
+                error: error instanceof Error ? error.message : "could not write file",
+              });
+              throw error;
+            }
+            await recordComputerAction("write_file", filePath, { bytes: content.byteLength });
             return finish({ ok: true, path: filePath });
           }
           if (name === "render_plot") {
@@ -2559,9 +2619,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (name === "attach_file") {
             const filePath = String(args.path ?? "");
-            if (!deps.artifacts) {
-              return finish({ error: "artifact storage unavailable", path: filePath });
-            }
+            const failAttach = async (error: string) => {
+              await recordComputerAction("attach_file", filePath, { error });
+              return finish({ error, path: filePath });
+            };
+            if (!deps.artifacts) return failAttach("artifact storage unavailable");
             const storedPath = resolveBotWorkspacePath(computerMode, bot.id, filePath);
             let bytes: Uint8Array;
             try {
@@ -2569,12 +2631,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 maxBytes: ATTACHMENT_MAX_BYTES,
               });
             } catch {
-              return finish({ error: "file not found or unreadable", path: filePath });
+              return failAttach("file not found or unreadable");
             }
             const mimeType = inferAttachmentMimeType(filePath);
-            if (!mimeType) {
-              return finish({ error: "unsupported attachment type", path: filePath });
-            }
+            if (!mimeType) return failAttach("unsupported attachment type");
             try {
               const attached = await attachWorkspaceFileToThread(
                 { prisma: deps.prisma, artifacts: deps.artifacts },
@@ -2592,12 +2652,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
               );
               await publishMessage(deps, run, "bot", [attached.block]);
+              await recordComputerAction("attach_file", filePath);
               return finish({ ok: true, artifactId: attached.artifactId, path: filePath });
             } catch (error) {
-              return finish({
-                error: error instanceof Error ? error.message : "could not attach file",
-                path: filePath,
-              });
+              return failAttach(error instanceof Error ? error.message : "could not attach file");
             }
           }
           if (name === "shell") {
@@ -2614,26 +2672,60 @@ export function createRunExecutor(deps: ExecutorDeps) {
               args.cwd ? String(args.cwd) : undefined,
             );
             workspaceCheckpoint.markDirty();
-            const result = await runSandboxCommand(
-              deps.sandbox,
-              computer,
-              [
-                "bash",
-                "-c",
-                BACKGROUND_WORK_LAUNCH,
-                "rakazo-background-launch",
-                // Marker id must match sleepComputerIfIdle's probe (DB id), not ComputerRef.id
-                // (providerRef via toComputerRef). Scope launches to this run for cancel teardown.
-                storedComputer.id,
-                runId,
-                randomUUID(),
-                command,
-              ],
-              cwd,
-              agentEnvironment,
-              context,
-            );
-            return finish(redactAgentCommandResult(result, runSecrets));
+            const commandEvent = {
+              executionId,
+              kind: "shell" as const,
+              command: redactSecrets(command, runSecrets),
+              cwd: redactSecrets(cwd ?? ".", runSecrets),
+            };
+            await appendComputerCommand({
+              ...commandEvent,
+              status: "running",
+              exitCode: null,
+              output: "",
+            });
+            try {
+              const result = await runSandboxCommand(
+                deps.sandbox,
+                computer,
+                [
+                  "bash",
+                  "-c",
+                  BACKGROUND_WORK_LAUNCH,
+                  "rakazo-background-launch",
+                  // Marker id must match sleepComputerIfIdle's probe (DB id), not ComputerRef.id
+                  // (providerRef via toComputerRef). Scope launches to this run for cancel teardown.
+                  storedComputer.id,
+                  runId,
+                  randomUUID(),
+                  command,
+                ],
+                cwd,
+                agentEnvironment,
+                context,
+              );
+              const redacted = redactAgentCommandResult(result, runSecrets);
+              await appendComputerCommand({
+                ...commandEvent,
+                status: "done",
+                exitCode: redacted.code,
+                output: `${redacted.stdout}${redacted.stderr}`.slice(
+                  -COMPUTER_COMMAND_OUTPUT_MAX_CHARS,
+                ),
+              });
+              return finish(redacted);
+            } catch (error) {
+              await appendComputerCommand({
+                ...commandEvent,
+                status: "done",
+                exitCode: 1,
+                output: redactSecrets(
+                  error instanceof Error ? error.message : "command failed",
+                  runSecrets,
+                ).slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
+              });
+              throw error;
+            }
           }
           if (name === "open_path") {
             if (heldForTakeover) {
@@ -2642,25 +2734,33 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const requestedPath = String(args.path ?? "");
             workspaceCheckpoint.markDirty();
             return computerScreenToolResult(async () => {
-              const result = await deps.sandbox.act(
-                computer,
-                {
-                  actions: [
-                    {
-                      kind: "open",
-                      path: /^https?:\/\//i.test(requestedPath)
-                        ? requestedPath
-                        : resolveBotWorkspacePath(computerMode, bot.id, requestedPath),
-                    },
-                  ],
-                  observe: true,
-                  settleMs: 600,
-                },
-                context,
-              );
-              return result.observation
-                ? formatObservation(result.observation, `opened ${requestedPath}`)
-                : { ok: true };
+              try {
+                const result = await deps.sandbox.act(
+                  computer,
+                  {
+                    actions: [
+                      {
+                        kind: "open",
+                        path: /^https?:\/\//i.test(requestedPath)
+                          ? requestedPath
+                          : resolveBotWorkspacePath(computerMode, bot.id, requestedPath),
+                      },
+                    ],
+                    observe: true,
+                    settleMs: 600,
+                  },
+                  context,
+                );
+                await recordComputerAction("open_path", requestedPath);
+                return result.observation
+                  ? formatObservation(result.observation, `opened ${requestedPath}`)
+                  : { ok: true };
+              } catch (error) {
+                await recordComputerAction("open_path", requestedPath, {
+                  error: error instanceof Error ? error.message : "could not open path",
+                });
+                throw error;
+              }
             }, finish);
           }
           if (name === "launch_app") {
@@ -2670,24 +2770,32 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const application = String(args.application ?? "");
             workspaceCheckpoint.markDirty();
             return computerScreenToolResult(async () => {
-              const result = await deps.sandbox.act(
-                computer,
-                {
-                  actions: [
-                    {
-                      kind: "launch",
-                      application,
-                      uri: args.uri ? String(args.uri) : undefined,
-                    },
-                  ],
-                  observe: true,
-                  settleMs: 600,
-                },
-                context,
-              );
-              return result.observation
-                ? formatObservation(result.observation, `launched ${application}`)
-                : { ok: true };
+              try {
+                const result = await deps.sandbox.act(
+                  computer,
+                  {
+                    actions: [
+                      {
+                        kind: "launch",
+                        application,
+                        uri: args.uri ? String(args.uri) : undefined,
+                      },
+                    ],
+                    observe: true,
+                    settleMs: 600,
+                  },
+                  context,
+                );
+                await recordComputerAction("launch_app", application);
+                return result.observation
+                  ? formatObservation(result.observation, `launched ${application}`)
+                  : { ok: true };
+              } catch (error) {
+                await recordComputerAction("launch_app", application, {
+                  error: error instanceof Error ? error.message : "could not launch app",
+                });
+                throw error;
+              }
             }, finish);
           }
           if (name === "remember") {
@@ -3920,7 +4028,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 maxImagesPerPrompt: resolved.maxImagesPerPrompt,
                 thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
                 oauth: resolved.oauth
-                  ? { credential: resolved.oauth, persist: resolved.persistOAuth }
+                  ? {
+                      credential: resolved.oauth,
+                      persist: resolved.persistOAuth,
+                      retire: resolved.retireOAuth,
+                    }
                   : undefined,
               },
               resumeFromCheckpoint: takeoverResume?.checkpoint,
@@ -5349,6 +5461,7 @@ async function resolveModelKey(
   userId: string,
   spaceId: string,
   credential: {
+    id: string;
     secretId: string;
     provider: string;
     defaultModel?: string | null;
@@ -5368,6 +5481,11 @@ async function resolveModelKey(
   maxImagesPerPrompt?: number;
   oauth?: AgentModelOAuthCredential;
   persistOAuth?: (credential: AgentModelOAuthCredential) => Promise<void>;
+  retireOAuth?: (
+    reason: ModelCredentialRetireReason,
+    detail?: string,
+    failed?: ModelCredentialFailedState,
+  ) => Promise<boolean | undefined>;
   redact: string[];
 }> {
   if (credential) {
@@ -5384,7 +5502,28 @@ async function resolveModelKey(
         { userId, spaceId },
         row.id,
       );
-      const resolveAuth = () => resolveModelAuth(plaintext, credential.provider, { persist });
+      // Retire exactly this credential. Two fences keep a stale failure from
+      // deleting newer material: secretId guards a reconnect that swapped the
+      // secret row, and matchesFailedSecret guards a concurrent successful
+      // refresh that rewrote the same row's ciphertext in place.
+      const retire = (
+        _reason: ModelCredentialRetireReason,
+        _detail: string | undefined,
+        failed?: ModelCredentialFailedState,
+      ) =>
+        retireModelCredential(deps.prisma, {
+          userId,
+          credentialId: credential.id,
+          secretId: credential.secretId,
+          matchesFailedSecret: failed
+            ? matchesFailedOAuthSecret(
+                (ciphertext, secretId) => deps.secretStore.load(ciphertext, secretId),
+                failed,
+              )
+            : undefined,
+        });
+      const resolveAuth = () =>
+        resolveModelAuth(plaintext, credential.provider, { persist, retire });
       let resolved: Awaited<ReturnType<typeof resolveAuth>> | undefined;
       const authError = validateModelAuthAvailability(provider, modelId, plaintext);
       if (authError) {
@@ -5465,6 +5604,7 @@ async function resolveModelKey(
               });
             }
           : undefined,
+        retireOAuth: retire,
         redact: [...secretValuesToRedact(resolved.secret), resolved.apiKey].filter(
           (value): value is string => Boolean(value),
         ),

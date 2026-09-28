@@ -1,7 +1,7 @@
 import type {
   AdapterContext,
   AdapterDescriptor,
-  AgentModelOAuthCredential,
+  AgentRunModel,
   AgentRuntime,
   AutoReviewCapabilities,
   AutoReviewProvider,
@@ -269,10 +269,7 @@ export async function runAutoReviewJudge(input: {
   apiKey?: string;
   baseUrl?: string;
   reasoning?: boolean;
-  oauth?: {
-    credential: AgentModelOAuthCredential;
-    persist?: (credential: AgentModelOAuthCredential) => Promise<void>;
-  };
+  oauth?: AgentRunModel["oauth"];
   prompt: string;
   runId: string;
   spaceId: string;
@@ -352,10 +349,7 @@ export type LlmAutoReviewOptions = {
   apiKey?: string;
   baseUrl?: string;
   reasoning?: boolean;
-  oauth?: {
-    credential: AgentModelOAuthCredential;
-    persist?: (credential: AgentModelOAuthCredential) => Promise<void>;
-  };
+  oauth?: AgentRunModel["oauth"];
   runId: string;
   spaceId: string;
   userId: string;

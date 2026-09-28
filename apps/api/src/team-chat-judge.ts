@@ -1,13 +1,20 @@
 import { randomUUID } from "node:crypto";
-import type { AgentModelOAuthCredential, AgentRuntime } from "@rakazo/adapter-kit";
+import type {
+  AgentRunModel,
+  AgentRuntime,
+  ModelCredentialFailedState,
+  ModelCredentialRetireReason,
+} from "@rakazo/adapter-kit";
 import {
   type EncryptedSecretStore,
   formatCurrentTimeInstruction,
+  matchesFailedOAuthSecret,
   resolveModelAuth,
   serializeModelSecret,
   toOAuthCredential,
 } from "@rakazo/adapters";
-import { findDefaultModelCredential, findModelCredential, type PrismaClient } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { findDefaultModelCredential, findModelCredential, retireModelCredential } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
 const MAX_RULES_CHARS = 4_000;
@@ -185,10 +192,7 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
       id: string;
       apiKey?: string;
       baseUrl?: string;
-      oauth?: {
-        credential: AgentModelOAuthCredential;
-        persist?: (credential: AgentModelOAuthCredential) => Promise<void>;
-      };
+      oauth?: AgentRunModel["oauth"];
     };
   } | null> {
     const settings = await this.deps.prisma.deploymentSettings.findUnique({
@@ -246,8 +250,26 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
         data: { ciphertext: stored.ciphertext },
       });
     };
+    // Same fences as the run path: a stale failure must not delete material a
+    // concurrent refresh or reconnect already persisted.
+    const retire = (
+      _reason: ModelCredentialRetireReason,
+      _detail: string | undefined,
+      failed?: ModelCredentialFailedState,
+    ) =>
+      retireModelCredential(this.deps.prisma, {
+        userId: bot.userId,
+        credentialId: credential.id,
+        secretId: credential.secretId,
+        matchesFailedSecret: failed
+          ? matchesFailedOAuthSecret(
+              (ciphertext, secretId) => this.deps.secrets.load(ciphertext, secretId),
+              failed,
+            )
+          : undefined,
+      });
     const plaintext = this.deps.secrets.load(secret.ciphertext, secret.id);
-    const auth = await resolveModelAuth(plaintext, provider, { persist });
+    const auth = await resolveModelAuth(plaintext, provider, { persist, retire });
     const parsed = auth.secret;
     const limit = parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {};
     if (parsed.kind === "oauth") {
@@ -267,6 +289,7 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
                 }),
               );
             },
+            retire,
           },
         },
       };

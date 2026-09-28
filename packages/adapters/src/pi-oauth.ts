@@ -6,6 +6,7 @@ import type {
   OAuthCredential,
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import type { ModelCredentialFailedState, ModelCredentialRetireReason } from "@rakazo/adapter-kit";
 import {
   MAX_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_MAX_TOKENS,
@@ -15,6 +16,7 @@ import {
   ThinkingLevelSchema,
 } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { createManualAnthropicOAuthLogin } from "./pi-anthropic-oauth.js";
 import type { EncryptedSecretStore } from "./secrets.js";
 
@@ -61,6 +63,173 @@ const SIGN_IN_START_WAIT_MS = 30_000;
 const REFRESH_KICK_TIMEOUT_MS = 30_000;
 const CORRUPT_MODEL_SECRET_MESSAGE =
   "Stored model credential is corrupt. Connect the provider again.";
+
+const TERMINAL_REFRESH_ERROR_MARKERS = [
+  "invalid_grant",
+  "refresh_token_expired",
+  "refresh_token_reused",
+  "refresh_token_invalidated",
+  // pi's Kimi Coding refresh reports a dead credential (401, 403, or a body
+  // `error: "invalid_grant"`) as this message without embedding the OAuth
+  // marker text itself.
+  "Kimi Code token refresh unauthorized",
+] as const;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Word-ish boundaries keep `invalid_grant` from matching a longer token such
+// as `not_invalid_grant`, while still matching the quoted JSON bodies pi embeds
+// in its refresh errors.
+const TERMINAL_REFRESH_ERROR_PATTERNS = TERMINAL_REFRESH_ERROR_MARKERS.map(
+  (marker) =>
+    [marker, new RegExp(`(^|[^A-Za-z0-9_])${escapeRegExp(marker)}([^A-Za-z0-9_]|$)`)] as const,
+);
+
+// pi embeds the token endpoint's HTTP status inside refresh error messages —
+// `failed (400):` for OpenAI Codex, `(HTTP 400)` for xAI, `(status 401)` for
+// Kimi Code, `status=400` inside Anthropic's flattened details, and
+// `401 Unauthorized:` at the start for GitHub Copilot — so extract only those
+// anchored shapes. A loose `\d{3}` would also match unrelated numbers quoted
+// in response bodies.
+const REFRESH_ERROR_STATUS_PATTERNS = [
+  /\bHTTP (\d{3})\b/gi,
+  /\bstatus[= ](\d{3})\b/gi,
+  /\((\d{3})\)/g,
+  /^(\d{3})(?=[\s:])/g,
+];
+
+// OAuth terminal rejections arrive as 400/401/403; a 5xx or unparseable status
+// stays transient even when the response body quotes a marker.
+const TERMINAL_REFRESH_HTTP_STATUSES = new Set([400, 401, 403]);
+
+// A layer's own status lives in pi's header formatting, before the embedded
+// response payload. Everything past the first payload marker — `): ` closing a
+// parenthesized status, `: {` opening a JSON body, `body=`/`stack=` fields in
+// Anthropic's flattened details, a bare `500: ` ending a flat status header,
+// or the `: ` after a Copilot-style leading status — is quoted server text
+// where a mention like "status 502" must not veto (or grant) terminality.
+function statusHeader(message: string): string {
+  let end = message.length;
+  const cutAt = (index: number, keep = 0) => {
+    if (index >= 0) end = Math.min(end, index + keep);
+  };
+  cutAt(message.indexOf("): "), 1); // keep ")" so `(400)` still parses
+  cutAt(message.indexOf(": {"), 1);
+  cutAt(message.indexOf("body="));
+  cutAt(message.indexOf("stack="));
+  const flat = /(\d{3}): /.exec(message);
+  if (flat && message.charAt(flat.index - 1) !== "(") {
+    // Keep the 3 status digits so the flat header still parses.
+    end = Math.min(end, flat.index + 3);
+  }
+  if (/^\d{3}[\s:]/.test(message)) cutAt(message.indexOf(": "), 1);
+  return message.slice(0, end);
+}
+
+const MAX_REFRESH_ERROR_CHAIN_DEPTH = 10;
+
+/**
+ * The matched terminal marker when a refresh failure permanently kills the
+ * stored credential, `undefined` for transient failures (timeouts, network
+ * errors, 5xx, malformed or unknown responses) that must not retire it. pi
+ * wraps provider errors in `ModelsError("oauth", "OAuth refresh failed for
+ * <provider>", { cause })`, and the provider-level message embeds the token
+ * endpoint's HTTP status and body, so inspect the whole `cause` chain: a
+ * marker retires only when a terminal 4xx status accompanies it — and a 5xx
+ * reported as ANY layer's own status vetoes it, since a gateway failure can
+ * wrap a quoted marker without the token endpoint having judged the
+ * credential at all.
+ */
+export function terminalOAuthRefreshErrorMarker(error: unknown): string | undefined {
+  let marker: string | undefined;
+  let terminalStatus = false;
+  let serverErrorStatus = false;
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    current !== undefined && current !== null && depth < MAX_REFRESH_ERROR_CHAIN_DEPTH;
+    depth += 1
+  ) {
+    const message =
+      current instanceof Error ? current.message : typeof current === "string" ? current : "";
+    marker ??= TERMINAL_REFRESH_ERROR_PATTERNS.find(([, pattern]) => pattern.test(message))?.[0];
+    const header = statusHeader(message);
+    for (const pattern of REFRESH_ERROR_STATUS_PATTERNS) {
+      for (const match of header.matchAll(pattern)) {
+        const status = Number(match[1]);
+        if (TERMINAL_REFRESH_HTTP_STATUSES.has(status)) terminalStatus = true;
+        else if (status >= 500 && status <= 599) serverErrorStatus = true;
+      }
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return marker !== undefined && terminalStatus && !serverErrorStatus ? marker : undefined;
+}
+
+const OPENAI_AUTH_CLAIMS_NAMESPACE = "https://api.openai.com/auth";
+
+/**
+ * Readable failure surfaced when a refresh comes back for a different ChatGPT
+ * account than the one that was connected.
+ */
+export const OAUTH_ACCOUNT_CHANGED_ERROR =
+  "The ChatGPT account changed during sign-in refresh. Connect the provider again.";
+
+/**
+ * Account identity asserted by an OAuth credential: the provider-populated
+ * `accountId` when present (pi's Codex refresh always sets it), else the
+ * ChatGPT-namespaced `chatgpt_account_id` claim inside a JWT access token —
+ * the same claim pi's `extractAccountId` reads. Never throws: an undecodable
+ * token yields `undefined`, which conservatively disables the account-change
+ * comparison instead of breaking refresh.
+ */
+export function oauthCredentialAccountId(credential: OAuthCredential): string | undefined {
+  if (typeof credential.accountId === "string" && credential.accountId) {
+    return credential.accountId;
+  }
+  const parts = credential.access.split(".");
+  const payload = parts.length === 3 ? parts[1] : undefined;
+  if (!payload) return undefined;
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString());
+    if (!claims || typeof claims !== "object") return undefined;
+    const namespaced = (claims as Record<string, unknown>)[OPENAI_AUTH_CLAIMS_NAMESPACE];
+    const accountId =
+      namespaced && typeof namespaced === "object"
+        ? (namespaced as Record<string, unknown>).chatgpt_account_id
+        : undefined;
+    return typeof accountId === "string" && accountId ? accountId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const retiredCredentialErrors = new WeakSet<object>();
+
+/**
+ * A credential was deleted before the model started. Account-change throws this
+ * directly. A terminal refresh keeps its original provider error and is recorded
+ * in `retiredCredentialErrors` so callers can still see that error object.
+ */
+export class RetiredModelCredentialError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetiredModelCredentialError";
+  }
+}
+
+export function markRetiredModelCredentialError(error: unknown): void {
+  if (typeof error === "object" && error !== null) retiredCredentialErrors.add(error);
+}
+
+export function isRetiredModelCredentialError(error: unknown): boolean {
+  return (
+    error instanceof RetiredModelCredentialError ||
+    (typeof error === "object" && error !== null && retiredCredentialErrors.has(error))
+  );
+}
 
 export type StoredModelSecret =
   | { kind: "api_key"; key: string; maxTokens?: number }
@@ -126,6 +295,8 @@ type Session = {
   submitCode?: (input: string) => void;
   codeSubmitted?: boolean;
   expiresTimer?: ReturnType<typeof setTimeout>;
+  /** The expiry timer fired while finish() was still persisting. */
+  expired?: boolean;
 };
 
 function isOAuthCredential(value: Credential): value is OAuthCredential {
@@ -272,7 +443,34 @@ export function secretValuesToRedact(secret: StoredModelSecret): string[] {
   return [secret.credential.access, secret.credential.refresh].filter(Boolean);
 }
 
-const OPENAI_AUTH_CLAIMS_NAMESPACE = "https://api.openai.com/auth";
+/**
+ * Build the stale-failure fence `retireModelCredential` applies inside its
+ * transaction. The predicate reports whether the credential's current secret
+ * row still decrypts to the exact OAuth material whose refresh failed — same
+ * access token, refresh token, and expiry — so a row rewritten by a concurrent
+ * successful refresh or reconnect skips the delete instead of losing the newer
+ * tokens. Anything that cannot be verified (unreadable ciphertext, non-OAuth
+ * material) reports false so the delete is skipped rather than destroying a
+ * credential it cannot prove stale.
+ */
+export function matchesFailedOAuthSecret(
+  load: (ciphertext: string, secretId: string) => string,
+  failed: ModelCredentialFailedState,
+): (secret: { id: string; ciphertext: string }) => boolean {
+  return (secret) => {
+    try {
+      const stored = parseModelSecret(load(secret.ciphertext, secret.id));
+      return (
+        stored.kind === "oauth" &&
+        stored.credential.access === failed.access &&
+        stored.credential.refresh === failed.refresh &&
+        stored.credential.expires === failed.expires
+      );
+    } catch {
+      return false;
+    }
+  };
+}
 
 /**
  * Reads the Codex access token's compute-residency claim. The raw value is
@@ -314,6 +512,11 @@ function providerCatalog() {
 
 type ResolveModelOpts = {
   persist?: (next: string) => Promise<void>;
+  retire?: (
+    reason: ModelCredentialRetireReason,
+    detail?: string,
+    failed?: ModelCredentialFailedState,
+  ) => Promise<boolean | undefined>;
   now?: number;
   oauth?: Pick<OAuthAuth, "refresh" | "toAuth">;
   signal?: AbortSignal;
@@ -337,7 +540,60 @@ export async function resolveModelAuth(
   let credential = parsed.credential;
   const maxTokens = parsed.maxTokens;
   if (credential.expires - now < MIN_OAUTH_VALIDITY_MS) {
-    credential = await oauth.refresh(credential, opts?.signal ?? new AbortController().signal);
+    try {
+      credential = await oauth.refresh(credential, opts?.signal ?? new AbortController().signal);
+    } catch (error) {
+      const marker = terminalOAuthRefreshErrorMarker(error);
+      if (marker && opts?.retire) {
+        let deleted = false;
+        try {
+          // `credential` is still the stored material the failed refresh was
+          // attempted on — retirement fences on it so a concurrently persisted
+          // newer credential survives the delete.
+          deleted = (await opts.retire("terminal-refresh-failure", marker, credential)) === true;
+        } catch (retireError) {
+          // A retirement failure must never mask the refresh error the caller sees.
+          // Leave the error unmarked so setup can retry after a database outage.
+          getLogger().error("model credential retirement failed", retireError);
+          throw error;
+        }
+        // Mark only a credential this call actually deleted. A skipped delete
+        // means a newer credential won the race and a retry may succeed.
+        if (deleted) markRetiredModelCredentialError(error);
+      }
+      throw error;
+    }
+    // A refresh that comes back for a different ChatGPT account must never be
+    // persisted or used: compare before persist so the new token is dropped
+    // with the credential, then fail with a readable error. Either side
+    // without an account id disables the comparison — no false positives.
+    const storedAccountId = oauthCredentialAccountId(parsed.credential);
+    const refreshedAccountId = oauthCredentialAccountId(credential);
+    if (storedAccountId && refreshedAccountId && storedAccountId !== refreshedAccountId) {
+      let deleted = false;
+      if (opts?.retire) {
+        try {
+          // `parsed.credential` is still the stored material whose refresh
+          // produced the foreign account — retirement fences on it so a
+          // concurrently persisted newer credential survives the delete.
+          deleted =
+            (await opts.retire(
+              "account-changed",
+              `stored account ${storedAccountId}, refreshed account ${refreshedAccountId}`,
+              parsed.credential,
+            )) === true;
+        } catch (retireError) {
+          // A retirement failure must never mask the account-change error.
+          // Leave it unmarked so setup can retry after a database outage.
+          getLogger().error("model credential retirement failed", retireError);
+        }
+      }
+      // The foreign token is never persisted. Fail the run permanently only
+      // when this call deleted the stored credential; a skipped delete means
+      // a newer credential survived and a retry may succeed.
+      if (deleted) throw new RetiredModelCredentialError(OAUTH_ACCOUNT_CHANGED_ERROR);
+      throw new Error(OAUTH_ACCOUNT_CHANGED_ERROR);
+    }
     await opts?.persist?.(
       serializeModelSecret({
         kind: "oauth",
@@ -630,7 +886,14 @@ export class PiOAuthLogins {
       input.signal?.removeEventListener("abort", abortFromRequest);
       if (abort.signal.aborted) throw abort.signal.reason ?? new Error("Sign-in cancelled.");
       session.expiresTimer = setTimeout(() => {
-        if (session.state === "finalizing") return;
+        // Leave a finalizing session in place. Removing it would free the scope
+        // for a replacement login whose credential the in-flight persist can
+        // then overwrite. Remember that expiry already fired so a failed save
+        // is dropped instead of coming back as a ready session with no timer.
+        if (session.state === "finalizing") {
+          session.expired = true;
+          return;
+        }
         session.abort.abort(new Error("Sign-in expired."));
         this.removeSession(session);
       }, started.expiresInSeconds * 1000);
@@ -703,18 +966,28 @@ export class PiOAuthLogins {
     if (result.status !== "connected") return result;
 
     // The state transition is synchronous, so cancel either wins before this claim or waits for
-    // the finalization to settle. The finalization signal is intentionally detached from cancel.
+    // the finalization to settle. Cancel waits on `finishing` instead of aborting the write.
+    // The expiry timer also leaves a finalizing session in place, so this persist cannot be
+    // dropped for a replacement login that would then lose to the late write. Teardown aborts
+    // the session signal only after the write settles.
     const finishing = deferred<void>();
     session.finishing = finishing.promise;
     session.state = "finalizing";
     try {
-      const value = await persist({ ...result, signal: new AbortController().signal });
+      const value = await persist({ ...result, signal: session.abort.signal });
       session.state = "consumed";
       this.removeSession(session);
       session.abort.abort();
       return { status: "connected", value };
     } catch (error) {
-      if (this.pending.get(loginId) === session) session.state = "ready";
+      if (this.pending.get(loginId) === session) {
+        if (session.expired) {
+          session.abort.abort(new Error("Sign-in expired."));
+          this.removeSession(session);
+        } else {
+          session.state = "ready";
+        }
+      }
       throw error;
     } finally {
       if (this.pending.get(loginId) === session) session.finishing = undefined;
@@ -793,7 +1066,10 @@ export class PiOAuthLogins {
   }
 
   abortAll(): void {
-    for (const session of this.pending.values()) session.abort.abort();
+    for (const session of [...this.pending.values()]) {
+      this.removeSession(session);
+      session.abort.abort();
+    }
     this.pending.clear();
     this.activeByScope.clear();
   }
