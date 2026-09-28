@@ -106,6 +106,52 @@ describe("call session", () => {
     });
   });
 
+  it("drops a send that finishes after the same bot is called again", async () => {
+    let finishSend: (value: { runId: string; taskId: string }) => void = () => undefined;
+    let failSend: (error: Error) => void = () => undefined;
+    send.mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          finishSend = resolve;
+          failSend = reject;
+        }) as never,
+    );
+
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const first = heard("book the flight");
+    expect(send).toHaveBeenCalledTimes(1);
+
+    endCall();
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const listens = listen.mock.calls.length;
+    getThread.mockClear();
+    finishSend({ runId: "run-old", taskId: "task-old" });
+    await first;
+
+    expect(getThread).not.toHaveBeenCalled();
+    expect(getSnapshot()).toMatchObject({
+      botId: "call-bot",
+      phase: "listening",
+      caption: "",
+    });
+    expect(listen.mock.calls.length).toBe(listens);
+
+    const second = heard("window seat");
+    expect(send).toHaveBeenCalledTimes(2);
+    endCall();
+    startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
+    const listensAfter = listen.mock.calls.length;
+    failSend(new Error("offline"));
+    await second;
+
+    expect(getSnapshot()).toMatchObject({
+      botId: "call-bot",
+      phase: "listening",
+      caption: "",
+    });
+    expect(listen.mock.calls.length).toBe(listensAfter);
+  });
+
   it("tags every message in one call with the same call id", async () => {
     startCall({ botId: "call-bot", botName: "Ada", transcribe: false });
     await heard("book the flight");

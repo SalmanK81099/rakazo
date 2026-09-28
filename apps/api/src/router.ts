@@ -1745,7 +1745,8 @@ export function createRouter(deps: RouterDeps) {
                 id: "heartbeat",
                 spaceId: context.actor.spaceId,
                 threadId: target.threadId,
-                botId: target.threadId,
+                // A bot thread's id is not the bot. Groups have no single bot, so the thread id stands in.
+                botId: target.kind === "bot" ? target.botId : target.threadId,
                 seq: 0,
                 type: "heartbeat",
                 createdAt: new Date().toISOString(),

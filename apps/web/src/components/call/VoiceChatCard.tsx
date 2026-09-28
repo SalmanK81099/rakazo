@@ -13,9 +13,20 @@ function clock(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function VoiceChatCard({ group }: { group: VoiceChatGroup }) {
+export function VoiceChatCard({
+  group,
+  revealMessageId,
+}: {
+  group: VoiceChatGroup;
+  revealMessageId?: string;
+}) {
   const { t } = useLingui();
   const [open, setOpen] = useState(false);
+  const revealed =
+    revealMessageId != null && group.messages.some((message) => message.id === revealMessageId);
+  // A jump looks the row up in the same commit. Expand during render so the row exists,
+  // and leave the card open after the request clears.
+  if (revealed && !open) setOpen(true);
   const summary = voiceChatSummary(group);
   return (
     <div
@@ -52,12 +63,14 @@ export function VoiceChatCard({ group }: { group: VoiceChatGroup }) {
         <div className="space-y-1.5 px-3 pb-3 text-sm">
           {group.messages.map((message) => {
             // The marker is the card's summary line, never a transcript turn.
-            if (message === group.marker) return null;
-            const text = speechFromBlocks(message.blocks).trim();
-            if (!text) return null;
+            const text = message === group.marker ? "" : speechFromBlocks(message.blocks).trim();
+            if (!text) {
+              return <span key={message.id} data-message-id={message.id} className="sr-only" />;
+            }
             return (
               <p
                 key={message.id}
+                data-message-id={message.id}
                 dir="auto"
                 className={cn(
                   message.role === "user"

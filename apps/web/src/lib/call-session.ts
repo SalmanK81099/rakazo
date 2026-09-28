@@ -344,8 +344,10 @@ async function handleTranscript(text: string) {
   const { botId, exchanges } = state;
   const askId = latestAskId(thread);
   const askMessage = thread?.messages.find((message) => message.id === askId);
-  // Captured now: a call started while this is in flight must not re-attach the new feed.
+  // Captured now: a call started while this is in flight must not re-attach the new feed
+  // or commit this turn onto it. The same bot can be called again, so the bot id is not enough.
   const callFeed = feed;
+  const turnCallId = callId;
   const closing = isFarewell(text);
   awaitingReply = true;
   set({ heard: text, phase: "thinking", exchanges: [...exchanges, { role: "user", text }] });
@@ -365,14 +367,14 @@ async function handleTranscript(text: string) {
         answer: spokenDecision(text) ?? text,
       });
     } else if (runActive(thread)) {
-      await rpc.threads.followUp({ botId, text, clientNonce: callClientNonce(callId) });
+      await rpc.threads.followUp({ botId, text, clientNonce: callClientNonce(turnCallId) });
     } else {
-      await rpc.threads.send({ botId, clientNonce: callClientNonce(callId), text });
+      await rpc.threads.send({ botId, clientNonce: callClientNonce(turnCallId), text });
     }
-    if (state?.botId !== botId) return;
+    if (!state || state.botId !== botId || callId !== turnCallId) return;
     commit(await rpc.threads.get({ botId }, { signal: callFeed?.signal }));
   } catch (error) {
-    if (state?.botId !== botId) return;
+    if (!state || state.botId !== botId || callId !== turnCallId) return;
     awaitingReply = false;
     set({ caption: errorText(error, t`Could not send that`) });
     void listen();

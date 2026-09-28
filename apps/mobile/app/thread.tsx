@@ -1339,7 +1339,7 @@ function Thread() {
       }
       startCall({
         botId,
-        botName: name ?? t("Bot"),
+        botName: displayName ?? t("Bot"),
         botColor: mentionBots.find((bot) => bot.id === botId)?.color,
         transcribe: status.transcribe,
       });
